@@ -34,7 +34,7 @@ SUBROUTINE propagation(psif, psi0, propa)
    REAL(kind=Rkind)           :: t               ! Current time
    REAL(kind=Rkind)           :: t_deltat        ! Time at next step
    REAL(kind=Rkind)           :: Norm            ! Wavefunction norm
-   REAL(kind=Rkind)           :: E, e0           ! Energies
+   REAL(kind=Rkind)           :: E, E0           ! Energies
    REAL(kind=Rkind)           :: aut_func_arg(1) ! Autocorrelation phase argument
    COMPLEX(kind=Rkind)        :: aut_func(1)     ! Autocorrelation value
 
@@ -48,9 +48,14 @@ SUBROUTINE propagation(psif, psi0, propa)
    TYPE(REDUCED_DENSIRY_t)    :: Rd               ! Reduced density matrix (unused for now)
     
    INTEGER :: Ndim, i, nt, nf, nsurf              ! Dimensions, loop indices
-   TYPE(psi_t) :: psi, psi_dt, psi_t0             ! Wavefunction containers (current, step, and reference)
+   TYPE(psi_t) :: psi, psi_dt, psi_t0 , Gspsi     ! Wavefunction containers (current, step, and reference)
+   character(len=Name_len) :: name
 
    !====================== Initialization =====================
+
+
+   name = propa%propa_name2 
+   call string_uppercase_TO_lowercase(name)
 
    IF (debug) THEN
       WRITE(out_unit, *) 'BEGINNING propagation', propa%t0, propa%tf, propa%delta_t
@@ -98,6 +103,7 @@ SUBROUTINE propagation(psif, psi0, propa)
    CALL init_psi(psi, psi0%Basis, cplx=.true., grid=.false.)
    CALL init_psi(psi_dt, psi0%Basis, cplx=.true., grid=.false.)
    CALL init_psi(psi_t0, Basis, cplx=.true., grid=.false.)
+   CALL init_psi(Gspsi, Basis, cplx=.true., grid=.false.)
 
    ! Copy initial wavefunction into psi and psi_t0
    psi%CVec(:) = psi0%CVec(:)
@@ -117,11 +123,20 @@ SUBROUTINE propagation(psif, psi0, propa)
    !CALL Calc_Av_E(e0, psi, H)
    !STOP 'cc propa'
 
+   IF (name == 'itp') THEN
+      CALL relax_propagation(psi_t0, H, propa)
+   ELSE IF (name == 'gssil') THEN
+      CALL find_ground_state_SIL(E0, Gspsi, H, psi0, psi0%Basis, propa%max_iter, propa%eps) 
+      WRITE(out_unit, *) "Ground state energy found: ", E0
+      CALL Calc_Av_E(E0, Gspsi, H)
+      WRITE(out_unit,*) ': <Gspsi|H|Gspsi>  =: ', E0
+   ELSE
+
    DO i = 0, nt
       t = i * propa%delta_t
       t_deltat = t + propa%delta_t
 
-      WRITE(out_unit, *) propa%propa_name2, i, t, t_deltat
+      !WRITE(out_unit, *) propa%propa_name2, i, t, t_deltat
 
       IF (propa%propa_name2 == 'vp') THEN
          CALL Get_Basis_Parameters(psi%Basis, Qt, SQt, At, Pt)
@@ -133,7 +148,7 @@ SUBROUTINE propagation(psif, psi0, propa)
       CALL Calc_Norm_OF_psi(psi, Norm)
       CALL Population(psi, pop)
 
-      CALL Calc_Auto_corr(psi_t0, psi, aut_func(1), aut_func_arg(1), propa%propa_name, propa%renorm, t=t,debug=ldebug)
+      CALL Calc_Auto_corr(psi_t0, psi, aut_func(1), aut_func_arg(1), propa, t=t,debug=ldebug)
       CALL Write_Complex(aut_func, nio=26, op='t_z', t=t)
       CALL Write_Complex(At, nio=20, op='t_z', t=t)
 
@@ -191,6 +206,7 @@ SUBROUTINE propagation(psif, psi0, propa)
       FLUSH(out_unit)
    END IF
 
+   END IF
 END SUBROUTINE propagation
 
 

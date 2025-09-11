@@ -77,6 +77,8 @@ contains
    
       INTEGER :: alloc_size   ! size of vector to allocate
       INTEGER :: istat        ! allocation status
+      LOGICAL , PARAMETER :: debug = .FALSE.
+      INTEGER :: i
    
       !-----------------------------------------------------------
       ! Step 1: Deallocate any existing psi data
@@ -87,13 +89,21 @@ contains
       ! Step 2: Validate basis
       !-----------------------------------------------------------
       IF (.NOT. Basis_IS_allocated(Basis)) THEN
-         PRINT *, 'ERROR in init_psi: the Basis is not initialized'
+         WRITE(out_unit,*) 'ERROR in init_psi: the Basis is not initialized'
          RETURN
+      ELSE
+         IF (debug) THEN
+            WRITE(out_unit,*) 'Basis is allocated in Init_psi'
+         END IF
       END IF
    
       IF (Basis%nb < 1) THEN
-         PRINT *, 'ERROR in init_psi: Basis%nb < 1!'
+         WRITE(out_unit,*) 'ERROR in init_psi: Basis%nb < 1!'
          RETURN
+      ELSE
+         IF (debug) THEN
+            WRITE(out_unit,*) 'Basis%nb is ', Basis%nb
+         END IF
       END IF
    
       !-----------------------------------------------------------
@@ -108,27 +118,48 @@ contains
       IF (grid) THEN
          ! GRID representation
          IF (ALLOCATED(Basis%tab_basis)) THEN
+            IF (debug) THEN
+               WRITE(out_unit,*) 'Basis%tab_basis is allocated in Init_psi and size is ', SIZE(Basis%tab_basis)
+            END IF
             alloc_size = Basis%nq * Basis%tab_basis(SIZE(Basis%tab_basis))%nb
          ELSE
+            IF (debug) THEN
+               WRITE(out_unit,*) 'Basis%tab_basis is not allocated in Init_psi'
+            END IF
             alloc_size = Basis%nq
          END IF
       ELSE
          ! BASIS representation
          IF (ALLOCATED(Basis%tab_basis)) THEN
+            IF (debug) THEN
+               WRITE(out_unit,*) 'Basis%tab_basis is allocated in Init_psi and size is ', SIZE(Basis%tab_basis)
+            END IF
             alloc_size = Basis%nb * Basis%tab_basis(SIZE(Basis%tab_basis))%nb
          ELSE
+            IF (debug) THEN
+               WRITE(out_unit,*) 'Basis%tab_basis is not allocated in Init_psi'
+            END IF
             alloc_size = Basis%nb
          END IF
       END IF
    
       !-----------------------------------------------------------
-      ! Step 5: Allocate the correct coefficient vector
+      ! Step 5: Allocate the correct coefficient vector and initialize to zero
+      ! then write the initial state if debug is true
       !-----------------------------------------------------------
       istat = 0
       IF (cplx) THEN
          ALLOCATE(psi%CVec(alloc_size), STAT=istat)
+         psi%CVec = CZERO
+         IF (debug) THEN
+            CALL Write_VecMat(psi%CVec, out_unit, 5, info='psi%CVec')
+         END IF
       ELSE
          ALLOCATE(psi%RVec(alloc_size), STAT=istat)
+         psi%RVec = ZERO
+         IF (debug) THEN
+            CALL Write_VecMat(psi%CVec, out_unit, 5, info='psi%CVec')
+         END IF
       END IF
    
       !-----------------------------------------------------------
@@ -809,8 +840,138 @@ END SUBROUTINE Calc_Norm_OF_Psi
    
    END SUBROUTINE write_psi_grid
 
-
    SUBROUTINE psi_init_GWP(psi, Tab_GWP)
+      !======================================================================
+      ! PURPOSE:
+      !   Initialize a wavefunction psi as a Gaussian Wave Packet (GWP)
+      !   in grid or basis space, based on the value of psi%grid.
+      !
+      ! ARGUMENTS:
+      !   psi      : (INOUT) Psi_t structure to be initialized
+      !   Tab_GWP  : (IN)    Array of GWP_t structures containing GWP parameters
+      !======================================================================
+  
+      USE QDUtil_m
+      IMPLICIT NONE
+  
+      TYPE(psi_t), INTENT(INOUT), TARGET   :: psi
+      TYPE(GWP_t), INTENT(IN)              :: Tab_GWP(:)
+  
+      !------------------ Local variables ---------------------------------------
+      TYPE(psi_t), TARGET                  :: psi_temp           ! Temporary wavefunction on grid
+      REAL(KIND=Rkind), ALLOCATABLE        :: Q(:, :)            ! Grid coordinates
+      INTEGER                              :: iq
+      COMPLEX(KIND=Rkind), POINTER         :: gb(:, :)           ! Pointer to temporary/final coefficients
+      REAL(KIND=Rkind)                     :: NormB ,normG  ,Re_normB           ! Norm in final representation
+      INTEGER                              :: ndim, n_surf, nq, i_surf
+      LOGICAL , PARAMETER                  :: debug = .FALSE.
+  
+      !------------------ Initialization and setup ---------------------------------
+      ndim   = SIZE(psi%Basis%tab_basis) - 1
+      n_surf = psi%Basis%tab_basis(ndim+1)%nb
+      nq     = psi%Basis%nq
+      i_surf = Tab_GWP(1)%Elecindex
+      
+      IF (debug) THEN
+          WRITE(out_unit, *) 'Initializing GWP with the following parameters:'
+          WRITE(out_unit, *) 'ndim = ', ndim
+          WRITE(out_unit, *) 'n_surf = ', n_surf
+          IF(psi%grid) THEN
+              WRITE(out_unit, *) 'nq = ', nq
+          ELSE
+              WRITE(out_unit, *) 'nb = ', psi%Basis%nb
+          END IF
+          WRITE(out_unit, *) 'i_surf = ', i_surf
+      END IF
+
+      IF(.NOT. ASSOCIATED(psi%Basis)) THEN
+          WRITE(out_unit, *) 'Error: psi%Basis is not allocated in psi_init_GWP.'
+          STOP 'Error: psi%Basis is not allocated in psi_init_GWP.'
+      ELSE
+          IF (debug) THEN
+              WRITE(out_unit, *) 'psi%Basis is allocated in psi_init_GWP.'
+          END IF
+      END IF
+      
+      IF (.NOT. ALLOCATED(psi%CVec)) THEN
+          WRITE(out_unit, *) 'Error: psi%CVec is not allocated in psi_init_GWP.'
+          STOP 'Error: psi%CVec is not allocated in psi_init_GWP.'
+      ELSE
+          IF (debug) THEN
+              WRITE(out_unit, *) 'psi%CVec is allocated in psi_init_GWP.'
+          END IF
+      END IF
+      
+      
+      !------------------ Build Gaussian Wave Packet -----------------------------
+      IF (psi%grid) THEN
+          ! Case 1: Initialize directly on the grid (psi%grid is .true.)
+          IF(debug) WRITE(out_unit, *) 'Initializing GWP directly on the grid (psi%grid = .TRUE.)=:',psi%grid
+          
+          CALL calc_Q_grid(Q, psi%Basis)
+          
+          gb(1:nq, 1:n_surf) => psi%CVec
+          
+          DO iq = 1, nq
+              gb(iq, i_surf) = calc_GWP(Tab_GWP(1), Q(iq, :))
+          END DO
+          
+          DEALLOCATE(Q)
+  
+      ELSE
+          ! Case 2: Initialize in the basis representation (psi%grid is .false.)
+          IF(debug) WRITE(out_unit, *) 'Initializing GWP on grid, then transforming to basis (psi%grid = .FALSE.)=:',psi%grid
+          IF(debug) CALL Write_VecMat(psi%CVec, out_unit, 5, info='psi%CVec')
+          
+          CALL init_psi(psi_temp, psi%Basis, cplx=.true., grid=.true.)
+          CALL calc_Q_grid(Q, psi%Basis)
+          
+          psi_temp%CVec(:) = CZERO
+          gb(1:nq, 1:n_surf) => psi_temp%CVec
+          
+          DO iq = 1, nq
+              gb(iq, i_surf) = calc_GWP(Tab_GWP(1), Q(iq, :))
+          END DO
+  
+          DEALLOCATE(Q)
+  
+          CALL GridTOBasis_nD_cplx(psi%CVec, psi_temp%CVec, psi%Basis)
+  
+          CALL dealloc_psi(psi_temp)
+      END IF
+  
+      !------------------ Norm Checking and Renormalization -------------------------
+      WRITE(out_unit, *) '------------------- Norm Checking after GWP initialization ----------------'
+      WRITE(out_unit, *)
+      IF (psi%grid) THEN
+        CALL Calc_Norm_Of_Psi(psi, NormG)
+        psi%CVec(:) = psi%CVec(:)/NormG
+        CALL Calc_Norm_Of_Psi(psi,NormG)
+      ELSE
+        CALL Calc_Norm_Of_Psi(psi, NormB)
+        psi%CVec(:) = psi%CVec(:)/NormB
+        CALL Calc_Norm_Of_Psi(psi,NormB)
+        psi%CVec(:) = psi%CVec(:)/NormB
+        CALL Calc_Norm_Of_Psi(psi,Re_normB)
+      END IF
+      
+      ! Display final state
+      IF (psi%grid) THEN
+      WRITE(out_unit, *) 'Norm of the initial GWP set on grid  normG := ', NormG  
+      ELSE
+         WRITE(out_unit, *) 'Norm of the initial GWP set on basis  normB := ', NormB  
+         WRITE(out_unit, *) 'Norm of the  renormalized initial GWP set on basis  Re_normB := ', Re_normB  
+      END IF
+  
+      WRITE(out_unit, *) '------------------------------ End Norm Checking --------------------------'
+      WRITE(out_unit, *)
+  
+  END SUBROUTINE psi_init_GWP
+  
+
+
+
+   SUBROUTINE psi_init_GWPtemp(psi, Tab_GWP)
       !======================================================================
       ! PURPOSE:
       !   Initialize a wavefunction psi as a Gaussian Wave Packet (GWP)
@@ -883,7 +1044,7 @@ END SUBROUTINE Calc_Norm_OF_Psi
       DEALLOCATE(Q)
       CALL dealloc_psi(psi0)
    
-   END SUBROUTINE psi_init_GWP
+   END SUBROUTINE 
 
 
    subroutine test(Basis)

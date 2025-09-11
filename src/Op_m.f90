@@ -16,10 +16,11 @@ module Op_m
 
    END TYPE Op_t
 
-   public :: Op_t, write_Op, Set_Op, dealloc_Op, calc_OpPsi, Calc_Hpsi, Kpsi_nD, Make_Mat_H
-   public  :: test_op,Calc_Scalar_Pot, test_openmp_op,calc_tab_Iq,calc_nac,calc_VV,Popu
+   PUBLIC :: Op_t, write_Op, Set_Op, dealloc_Op, calc_OpPsi, Calc_Hpsi, Kpsi_nD, Make_Mat_H
+   PUBLIC :: test_op,Calc_Scalar_Pot, test_openmp_op,calc_tab_Iq,calc_nac,calc_VV,Popu
+   PUBLIC :: Build_CN_Matrices, Build_CN_Propagator
 
-contains
+CONTAINS
    SUBROUTINE alloc_Op(Op, nb)
       TYPE(Op_t), intent(inout) :: Op
       integer, intent(in)    :: nb
@@ -63,85 +64,347 @@ contains
 
    END SUBROUTINE write_Op
 
-   SUBROUTINE Make_Mat_H(Basis,H)
-      Use QDUtil_m
-      USE Basis_m
-      USE Psi_m
 
-      TYPE(Basis_t),intent(in)            :: Basis
-      TYPE(Op_t), intent(inout)           :: H
-
-      !logical, parameter                  :: debug = .true.
-      logical,         parameter          :: debug = .false.
-      integer, allocatable                :: Tab_iq(:, :)
-      TYPE(psi_t)                         :: psi,Hpsi
-      integer                             :: nb,nsurf,ib,jb,ndim
-
-      IF (debug) THEN
-         write (out_unit, *) 'BEGINNING Make_Mat_H'
-         call write_basis(Basis)
-         flush (out_unit)
-      END IF
-
-      call  init_psi(psi, Basis,  cplx=.true., grid=.false.)
-      call  init_psi(Hpsi,Basis,  cplx=.true., grid=.false.)
-
-      ndim = size(Basis%tab_basis) - 1
-      nsurf=Basis%tab_basis(ndim+1)%nb
-      nb =(Basis%nb)*nsurf
-      allocate(H%CMat(nb,nb))
-      call Calc_tab_Iq0(Tab_Iq,Basis)
-      call Set_Op(H, Basis,Tab_Iq)
-
-      DO jb = 1, nb
+!-----------------------------------------------------------------------
+!> @brief  Build the Hamiltonian matrix in the chosen basis.
+!>
+!> This routine constructs the Hamiltonian matrix `H%CMat` using the basis
+!> `Basis`. The Hamiltonian is applied to each basis vector via the operator
+!> application routine, and the resulting matrix elements are obtained as
+!> scalar products.
+!>
+!> Steps:
+!>   1. Initialize temporary wavefunctions `psi` and `Hpsi`.
+!>   2. Allocate the Hamiltonian matrix.
+!>   3. Loop over basis vectors (columns):
+!>        - Apply the operator H to a basis vector.
+!>        - Compute the inner product with all other basis vectors.
+!>   4. Store the results in `H%CMat`.
+!>
+!> A local debug flag is available to print information about the basis,
+!> allocation, and progression of the computation.
+!>
+!> @param[in]    Basis   Basis set information
+!> @param[inout] H       Hamiltonian operator (matrix will be filled)
+!---------------------------------------------------------------------------------
+SUBROUTINE Make_Mat_H(Basis,H)
+   IMPLICIT NONE
+ 
+   !--------- Arguments --------------------------------------------------
+   TYPE(Basis_t), INTENT(IN)     :: Basis
+   TYPE(Op_t),    INTENT(INOUT)  :: H
+ 
+   !--------- Local variables ------------------------------------------
+   LOGICAL, PARAMETER            :: debug = .FALSE.  ! Debug flag
+   INTEGER, ALLOCATABLE          :: Tab_Iq(:, :)
+   TYPE(psi_t)                   :: psi, Hpsi
+   INTEGER                       :: nb, nsurf, ib, jb, ndim
+ 
+   !--------- Debug: beginning -----------------------------------------
+   IF (debug) THEN
+      WRITE(out_unit, *) '>>> BEGINNING Make_Mat_H'
+      CALL write_basis(Basis)
+      FLUSH(out_unit)
+   END IF
+ 
+   !--------- Initialize temporary wavefunctions -------------------------
+   CALL init_psi(psi,  Basis, cplx=.TRUE., grid=.FALSE.)
+   CALL init_psi(Hpsi, Basis, cplx=.TRUE., grid=.FALSE.)
+ 
+   !--------- Extract dimensions -----------------------------------------
+   ndim  = SIZE(Basis%tab_basis) - 1
+   nsurf = Basis%tab_basis(ndim+1)%nb
+   nb    = (Basis%nb) * nsurf
+ 
+   !--------- Set Op ---------------------------------------------------
+   CALL Set_Op(H, Basis, Tab_Iq, alloc=.TRUE.)
+ 
+   !--------- Loop over basis vectors ------------------------------------
+   DO jb = 1, nb
+      ! Set psi to basis vector |jb>
+      psi%CVec(:)  = CZERO
+      psi%CVec(jb) = CONE
+ 
+      ! Apply Hamiltonian: Hpsi = H |psi>
+      CALL calc_Oppsi(H, psi, Hpsi)
+ 
+      ! Compute matrix elements <ib|H|jb>
+      DO ib = 1, nb
          psi%CVec(:)  = CZERO
-         psi%CVec(jb) = CONE
-         call  calc_Oppsi(H, psi, Hpsi)
-
-         DO ib = 1, nb
-            psi%CVec(:) = CZERO
-            psi%CVec(ib) = CONE
-            H%CMat(ib, jb) = dot_product(psi%CVec,Hpsi%CVec)
-         END DO
-
+         psi%CVec(ib) = CONE
+         H%CMat(ib, jb) = DOT_PRODUCT(psi%CVec, Hpsi%CVec)
       END DO
-      call dealloc_psi(psi)
-      call dealloc_psi(Hpsi)
-      deallocate(Tab_Iq)
+   END DO
 
+   !Printing the matrix
+   !call Write_VecMat(H%CMat, out_unit, 5, info='H')
+ 
+   !--------- Cleanup --------------------------------------------------
+   CALL dealloc_psi(psi)
+   CALL dealloc_psi(Hpsi)
+ 
+   !--------- Debug: end -----------------------------------------------
+   IF (debug) THEN
+      WRITE(out_unit, *) '>>> END Make_Mat_H'
+      FLUSH(out_unit)
+   END IF
+ 
+ END SUBROUTINE Make_Mat_H
+
+
+
+!--------------------------------------------------------------------
+!> @brief  Construct the Crank–Nicolson matrices M_minus and M_plus.
+!>
+!> Given the Hamiltonian matrix H, this routine builds the two 
+!> matrices required for Crank–Nicolson propagation:
+!>      H_minus = I - (i dt / 2) H
+!>      H_plus  = I + (i dt / 2) H
+!>
+!> @param[in]  H       Hamiltonian matrix (nb x nb)
+!> @param[in]  dt      Time step Δt
+!> @param[out] H_minus Matrix (nb x nb): I - (i dt / 2) H
+!> @param[out] H_plus  Matrix (nb x nb): I + (i dt / 2) H
+!--------------------------------------------------------------------
+SUBROUTINE Build_CN_Matrices(H, dt, H_minus, H_plus)
+   IMPLICIT NONE
+ 
+   !------------ Arguments --------------------------------------------
+   COMPLEX(KIND=Rkind), INTENT(IN)  :: H(:,:)
+   REAL(KIND=Rkind),    INTENT(IN)  :: dt
+   COMPLEX(KIND=Rkind), ALLOCATABLE, INTENT(OUT) :: H_minus(:,:), H_plus(:,:)
+ 
+   !------------ Local variables ----------------------------------------
+   LOGICAL, PARAMETER            :: debug = .FALSE.
+   INTEGER                       :: nb, i
+   COMPLEX(KIND=Rkind)           :: coef
+ 
+   !------------ Get matrix size ----------------------------------------
+   nb = SIZE(H, 1)
+ 
+   !------------ Allocate outputs ---------------------------------------
+   ALLOCATE(H_minus(nb, nb), H_plus(nb, nb))
+ 
+   !------------ Compute prefactor coef = i dt / 2 ----------------------
+   coef = EYE * dt / TWO
+ 
+   !------------ Build matrices -----------------------------------------
+   H_minus(:,:) = -coef * H(:,:)
+   H_plus(:,:)  =  coef * H(:,:)
+ 
+   ! Add identity contribution on the diagonal
+   DO i = 1, nb
+      H_minus(i,i) = H_minus(i,i) + CONE
+      H_plus(i,i)  = H_plus(i,i)  + CONE
+   END DO
+ 
+   !------------ Debug info ---------------------------------------------
+   IF (debug) THEN
+      WRITE(out_unit,*) '>>> Build_CN_Matrices: matrices constructed'
+      WRITE(out_unit,*) '    nb   =', nb
+      WRITE(out_unit,*) '    dt   =', dt
+      FLUSH(out_unit)
+   END IF
+ 
+ END SUBROUTINE Build_CN_Matrices
+
+
+ !---------------------------------------------------------------------
+ !> @brief  Construct the Crank–Nicolson propagator U.
+ !>
+ !> This routine builds the unitary propagator
+ !>      U = (I - i dt/2 H)^(-1) (I + i dt/2 H)
+ !>
+ !> It calls Build_CN_Matrices to generate M_minus and M_plus,
+ !> then inverts M_minus with inv_Of_Mat_TO.
+ !>
+ !> @param[in]  H   Hamiltonian matrix (nb x nb)
+ !> @param[in]  dt  Time step Δt
+ !> @param[out] U   Propagator matrix (nb x nb)
+ !---------------------------------------------------------------------
+ SUBROUTINE Build_CN_Propagator(H, dt, U)
+    IMPLICIT NONE
+ 
+    !-------- Arguments ------------------------------------------------
+    COMPLEX(KIND=Rkind), INTENT(IN)  :: H(:,:)
+    REAL(KIND=Rkind),    INTENT(IN)  :: dt
+    COMPLEX(KIND=Rkind), ALLOCATABLE, INTENT(OUT) :: U(:,:)
+ 
+    !-------- Local variables -------------------------------------------
+    LOGICAL, PARAMETER :: debug = .FALSE.
+    INTEGER            :: nb
+    COMPLEX(KIND=Rkind), ALLOCATABLE :: M_minus(:,:), M_plus(:,:)
+ 
+    !-------- Get matrix size -------------------------------------------
+    nb = SIZE(H, 1)
+ 
+    !-------- Build M_minus and M_plus ----------------------------------
+    CALL Build_CN_Matrices(H, dt, M_minus, M_plus)
+    IF (debug) CALL Write_VecMat(H, out_unit, 5, info='H')
+ 
+    !-------- Invert M_minus --------------------------------------------
+    M_minus = inv_OF_Mat(M_minus,inv_type=0,epsi=1.d-20)   ! M_minus = (M_minus)^(-1)
+ 
+    !-------- Compute propagator ----------------------------------------
+    ALLOCATE(U(nb, nb))
+    U(:,:) = MATMUL(M_minus, M_plus)
+ 
+    !-------- Debug info ------------------------------------------------
+    IF (debug) THEN
+       WRITE(out_unit,*) '>>> Build_Propagator: propagator constructed'
+       WRITE(out_unit,*) '    nb   =', nb
+       WRITE(out_unit,*) '    dt   =', dt
+       FLUSH(out_unit)
+    END IF
+
+
+    !Print the propagator
+    IF (debug) CALL Write_VecMat(U, out_unit, 5, info='U')
+    !Cleanup
+    IF (ALLOCATED(M_minus)) DEALLOCATE(M_minus)
+    IF (ALLOCATED(M_plus))  DEALLOCATE(M_plus)
+ 
+ END SUBROUTINE Build_CN_Propagator
+
+!===============================================================================
+!> SUBROUTINE: write_3D_array_column_major
+!>
+!> Purpose:
+!>   Writes a 3D real array V(:,:,:) in column-major order.
+!>   The output is linearized such that the first index varies fastest,
+!>   then the second, then the third (Fortran-style storage order).
+!>
+!> Arguments:
+!>   - V         : (IN)  3D real array
+!>   - out_unit  : (IN)  Fortran output unit (screen or file)
+!>
+!> Notes:
+!>   - Dimensions are automatically determined from V.
+!>   - Each line contains one element with its linearized index and (i,j,k) indices.
+!===============================================================================
+ SUBROUTINE write_3D_array(V, out_unit)
+   IMPLICIT NONE
+   !----------------- Arguments -----------------
+   REAL(KIND=Rkind), INTENT(IN) :: V(:,:,:)
+   INTEGER, INTENT(IN) :: out_unit
+ 
+   !----------------- Local variables -----------------
+   INTEGER :: i, j, k, idx
+   INTEGER :: dimx, dimy, dimz
+ 
+   !----------------- Determine array size -----------------
+   dimx = SIZE(V,1)
+   dimy = SIZE(V,2)
+   dimz = SIZE(V,3)
+ 
+   WRITE(out_unit,*) '--- Writing 3D array in column-major order ---'
+   WRITE(out_unit,*) 'Dimensions: (', dimx, ',', dimy, ',', dimz, ')'
+ 
+   idx = 0
+   DO k = 1, dimz
+      DO j = 1, dimy
+         DO i = 1, dimx
+            idx = idx + 1
+            WRITE(out_unit,'(A,I6,A,I4,A,I4,A,I4,A,F14.6)') 'Index ', idx, ': V(', i, ',', j, ',', k, ') = ', V(i,j,k)
+         END DO
+      END DO
+   END DO
+ 
+   !----------------- Flush output -----------------
+   FLUSH(out_unit)
+ END SUBROUTINE write_3D_array
+ 
+!----------------------------------------------------------------------
+!> @brief  Initialize or update the operator Op based on the given Basis.
+!>
+!> This routine sets up the operator `Op` using the information contained
+!> in the basis `Basis` and the index table `Tab_Iq`. The behavior can be 
+!> controlled with an optional logical argument `alloc`:
+!>   - If `alloc=.TRUE.`, the operator structure is fully allocated 
+!>     (memory allocation + initialization).
+!>   - If `alloc=.FALSE.` (default), only the scalar potential `Scal_pot`
+!>     is computed using the provided basis.
+!>
+!> A local debug flag is available to print important internal information
+!> such as dimension sizes, number of surfaces, and allocation choices.
+!>
+!> @param[inout] Op      Operator object to initialize
+!> @param[in]    Basis   Basis object defining the system
+!> @param[in]    Tab_Iq  Index table for quadrature points
+!> @param[in]    alloc   [optional] logical flag controlling allocation
+!----------------------------------------------------------------------
+SUBROUTINE Set_Op(Op, Basis, Tab_Iq, alloc)
+   IMPLICIT NONE
+ 
+   !--------- Arguments --------------------------------------------------
+   TYPE(Op_t),     INTENT(INOUT)         :: Op
+   TYPE(Basis_t),  INTENT(IN),   TARGET  :: Basis
+   INTEGER,        INTENT(IN)            :: Tab_Iq(:, :)
+   LOGICAL,        INTENT(IN), OPTIONAL  :: alloc
+ 
+   !--------- Local variables ------------------------------------------
+   INTEGER :: ndim, nsurf, nq,nb
+   LOGICAL :: do_alloc
+   LOGICAL , PARAMETER :: debug = .FALSE.
+ 
+   !======== Check basis ===============================================
+   IF (.NOT. Basis_IS_allocated(Basis)) THEN
+      STOP 'ERROR in Set_Op: the Basis is not initialized'
+   END IF
+ 
+   !======== Extract dimensions ========================================
+   ndim  = SIZE(Basis%tab_basis) - 1
+   nq    = Basis%nq
+   nsurf = Basis%tab_basis(ndim+1)%nb
+   nb = Basis%nb*nsurf
+ 
+   !======== Decide allocation mode ====================================
+   IF (PRESENT(alloc)) THEN
+      do_alloc = alloc
+   ELSE
+      do_alloc = .FALSE.
+   END IF
+ 
+   !======== Perform allocation or scalar potential calculation ========
+   IF (do_alloc) THEN
+      ! Full allocation of the operator structure
+     IF(.NOT. ALLOCATED(Op%CMat)) ALLOCATE(Op%CMat(nb,nb))
+     IF(.NOT. ALLOCATED(Op%Scal_pot)) ALLOCATE(Op%Scal_pot(nq, nsurf, nsurf))
+     Op%Basis => Basis
+
+
+     ! Initialize the operator matrix 
+      Op%CMat(:,:) = CZERO
+      Op%Scal_pot(:,:,:) = ZERO
+
+     CALL Calc_Scalar_Pot(Op%Scal_pot, Basis)
+
+
+     IF(debug) CALL Write_VecMat(Op%CMat, out_unit, 5, info='Op%CMat')
+     IF(debug) CALL write_3D_array(Op%Scal_pot, out_unit)
+ 
       IF (debug) THEN
-         write (out_unit, *) 'END Make_Mat_H'
-         flush (out_unit)
+         WRITE(out_unit,*) '>>> Set_Op: Operator fully allocated'
+         WRITE(out_unit,*) '    ndim   =', ndim
+         WRITE(out_unit,*) '    nq     =', nq
+         WRITE(out_unit,*) '    nb     =', Basis%nb
+         WRITE(out_unit,*) '    nsurf  =', nsurf
       END IF
-
-   END SUBROUTINE 
-
-   SUBROUTINE Set_Op(Op, Basis,Tab_Iq)
-      USE Basis_m
-
-      TYPE(Op_t), intent(inout)         :: Op
-      TYPE(Basis_t), intent(in), target :: Basis
-      integer, intent(in)               :: Tab_iq(:, :)
-
-      Integer                            :: ndim,nsurf,nq
-
-      IF (.NOT. Basis_IS_allocated(Basis)) THEN
-         STOP 'ERROR in Set_Op: the Basis is not initialized'
+   ELSE
+      ! Only compute scalar potential
+      CALL Calc_Scalar_Pot(Op%Scal_pot, Basis)
+ 
+      IF (debug) THEN
+         WRITE(out_unit,*) '>>> Set_Op: Only scalar potential computed'
+         WRITE(out_unit,*) '    ndim   =', ndim
+         WRITE(out_unit,*) '    nq     =', nq
+         WRITE(out_unit,*) '    nb     =', Basis%nb
+         WRITE(out_unit,*) '    nsurf  =', nsurf
       END IF
-
-      ndim = size(Basis%tab_basis) - 1
-      nq =Basis%nq
-      nsurf=Basis%tab_basis(ndim+1)%nb
-
-      !CALL alloc_Op(Op, Basis%nb*Basis%tab_basis(size(Basis%tab_basis))%nb)
-      !allocate(Op%Scal_pot(nq, nsurf, nsurf))
-      !Op%Basis => Basis
-
-      !call Calc_Scalar_Pot(Op%Scal_pot, Basis)
-      !call Calc_tab_Iq0(Tab_Iq,Basis)
-      call Calc_Scalar_Pot(Op%Scal_pot, Basis)
-
-   END SUBROUTINE 
+   END IF
+ 
+ END SUBROUTINE Set_Op
+ 
 
    SUBROUTINE Kpsi_nD(KPsi_g, Psi_g, Basis)
       USE Basis_m
@@ -226,8 +489,8 @@ contains
       nq    = Basis%nq                         ! Total number of grid points
       nsurf = Basis%tab_basis(ndim + 1)%nb     ! Number of electronic surfaces
    
-      allocate(V(nq, nsurf, nsurf))
-      call Calc_Q_grid(Q, Basis)
+      IF (.NOT. allocated(V)) allocate(V(nq, nsurf, nsurf))
+      CALL Calc_Q_grid(Q, Basis)
    
       ! ===== Parallel loop avec variables privées =====
       !$OMP PARALLEL DEFAULT(NONE) &
@@ -269,7 +532,7 @@ contains
       end do
       
       ! Initialisation pour respecter -finit-real=nan
-      V_local = 0.0_Rkind
+      V_local = ZERO
       
       ! Appel avec tableaux continus
       call sub_Qmodel_V(V_local, Q_local)
@@ -282,88 +545,6 @@ contains
       end do
       
    END SUBROUTINE calc_potential_point
-
-
-
-   subroutine Calc_Scalar_Pot_buggy(V, Basis)
-      use QDUtil_m
-      use Basis_m
-      implicit none
-   
-      ! ===== Arguments =====
-      type(Basis_t), intent(in), target                :: Basis
-      real(kind=Rkind), allocatable, intent(inout)     :: V(:, :, :)
-   
-      ! ===== Local variables =====
-      integer                                          :: ndim, iq, nq, nsurf
-      real(kind=Rkind), allocatable                    :: Q(:,:)
-   
-      ! ===== Initialization =====
-      ndim  = size(Basis%tab_basis) - 1        ! Number of nuclear degrees of freedom
-      nq    = Basis%nq                         ! Total number of grid points
-      nsurf = Basis%tab_basis(ndim + 1)%nb     ! Number of electronic surfaces
-   
-      allocate(V(nq, nsurf, nsurf))
-      call Calc_Q_grid(Q, Basis)
-   
-      ! ===== Loop over all grid points in multidimensional space =====
-
-      Do iq = 1, Basis%nq
-         ! Evaluate the scalar potential matrix at position Q
-         call sub_Qmodel_V(V(iq, :, :), Q(iq,:))
-         !write(111,*) iq,Q(iq,:),V(iq, :, :)
-      end do
-   
-      ! ===== Deallocation =====
-      deallocate(Q)
-   
-   end subroutine Calc_Scalar_Pot_buggy
-
-SUBROUTINE Calc_Scalar_Pot_temp(V, Basis)
-   USE  QDUtil_m
-   USE Basis_m
-   TYPE(Basis_t), intent(in), target                :: Basis
-   real(kind=Rkind), allocatable ,intent(inout)     :: V(:, :, :)
-
-   integer, allocatable                             :: Tab_iq(:)
-   integer                                          :: inb, ndim, iq,nq,nsurf,i
-   real(Kind=Rkind)               , allocatable     :: Q(:)
-   logical                                          :: Endloop
-
-   ndim = size(Basis%tab_basis) - 1
-   nq =Basis%nq
-   nsurf=Basis%tab_basis(ndim+1)%nb
-
-   open (unit = 200, file = "V11-ad=f.txt")
-   open (unit = 201, file = "V22-ad=f.txt")
-   open (unit = 202, file = "V12-ad=f.txt")
-
-    allocate (Q(ndim),Tab_iq(ndim))
-    allocate(V(nq, nsurf, nsurf))
-
-   Call Init_tab_ind(Tab_iq, Basis%NDindexq)
-   Iq = 0
-   DO
-      Iq = Iq + 1
-      i =Tab_iq(2)
-      CALL increase_NDindex(Tab_iq, Basis%NDindexq, Endloop)
-      IF (Endloop) exit
-      do inb = 1, ndim
-          Q(inb) = Basis%tab_basis(inb)%x(Tab_iq(inb))
-      end do
-      CALL sub_Qmodel_V(V(iq, :, :), Q(:))
-      if ( (Tab_iq(2)/= i) )then 
-          write(200,*)
-          write(201,*)
-          write(202,*)
-      end if    
-      write(200,*) Q(:),V(iq, 1, 1)
-      write(201,*) Q(:),V(iq, 2, 2)
-      write(202,*) Q(:),V(iq, 2, 1)
-   END DO
-
-   deallocate(Tab_iq,Q)
-END SUBROUTINE 
 
 
 SUBROUTINE test_op(Basis,psi0)

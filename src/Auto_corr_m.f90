@@ -3,6 +3,7 @@ module Auto_corr_m
    USE psi_m
    USE Basis_m
    Use Hagedorn_m
+   Use sub_propa_m
 
    implicit none
    public :: Calc_Auto_corr, Calc_fft_Auto_corr,test_write_cplx,eval_pics
@@ -33,8 +34,7 @@ contains
    !> @param[in]     it               (Optional) Iteration index
    !> @param[in]     debug            (Optional) If .true., write debug information
    !==============================================================
-   SUBROUTINE Calc_Auto_corr(psi0, psi_dt, corre_coeff, arg_corre_coeff, &
-      propa_name, renorm, t, it, debug)
+   SUBROUTINE Calc_Auto_corr(psi0, psi_dt, corre_coeff, arg_corre_coeff,propa, t, it, debug)
    USE QDUtil_m
    USE psi_m
    
@@ -44,8 +44,7 @@ contains
    TYPE(psi_t),      intent(in)            :: psi0, psi_dt
    complex(Rkind),   intent(inout)         :: corre_coeff
    real(Rkind),      intent(inout)         :: arg_corre_coeff
-   character(*),     intent(in)            :: propa_name
-   logical,          intent(in)            :: renorm
+   TYPE(propa_t),    intent(in)            :: propa
    real(Rkind),      intent(in), optional  :: t
    integer,          intent(in), optional  :: it
    logical,          intent(in), optional  :: debug
@@ -70,7 +69,7 @@ contains
    !-----------------------------------------------------------
    IF (ldebug) WRITE(out_unit,*) ">>> Entering Calc_Auto_corr"
    
-   IF (propa_name == 'hagedorn') THEN
+   IF (propa%propa_name == 'hagedorn') THEN
    !--- Initialize Basis0 from psi0 and construct primitive basis
    CALL init_Basis1_TO_Basis2(Basis0, psi0%Basis)
    CALL construct_primitive_basis(Basis0)
@@ -88,7 +87,7 @@ contains
    psi_t0%CVec = psi_dt%CVec
    
    !--- Apply inverse Hagedorn transformation
-   CALL Hagedorn_Inv(psi, psi_t0, renorm)
+   CALL Hagedorn(psi, psi_t0, propa, use_psi0_params=.TRUE.)
    
    !--- Compute autocorrelation coefficient
    corre_coeff     = DOT_PRODUCT(psi0%CVec, psi%CVec)

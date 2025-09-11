@@ -31,11 +31,12 @@ MODULE Basis_m
    PUBLIC :: Get_Basis_Parameters, Change_Basis_Parameters
    PUBLIC :: Calc_Basis_dPtQtAt
    
-   PUBLIC :: Calc_d0d1d2W
-   
    PUBLIC :: Calc_reduced_Density_surf, Calc_reduced_density
    PUBLIC :: REDUCED_DENSIRY_t
    PUBLIC :: calc_tab_Iq0 ,Complete_construct_Basis
+   PUBLIC :: Print_Grids, Build_NUFT_Grids, Test_NUFFT_Cycle
+   PUBLIC :: ApplyExpVdtAndTransformToMomentum,ApplyExpTdtAndTransformToPosition
+   
 
 !----------------------------------------------------------------------
 ! TYPE: Basis_t
@@ -71,10 +72,12 @@ MODULE Basis_m
    REAL(KIND=Rkind)                    :: A, B
    REAL(KIND=Rkind)                    :: imp_k    ! Momentum parameter
    REAL(KIND=Rkind)                    :: scaleQ, Q0
-   COMPLEX(KIND=Rkind)                 :: Alpha = CZERO
+   COMPLEX(KIND=Rkind)                 :: Alpha = CONE
    CHARACTER(LEN=:), ALLOCATABLE       :: Basis_name
+   !<--- Grid points and weights
    REAL(KIND=Rkind),    ALLOCATABLE    :: x(:)      ! Grid points
    REAL(KIND=Rkind),    ALLOCATABLE    :: w(:)      ! Quadrature weights
+   !<--- Derivative matrices
    COMPLEX(KIND=Rkind), ALLOCATABLE    :: d0gb(:, :)
    COMPLEX(KIND=Rkind), ALLOCATABLE    :: d0bgw(:, :)
    COMPLEX(KIND=Rkind), ALLOCATABLE    :: d1gb(:, :, :)
@@ -87,9 +90,12 @@ MODULE Basis_m
    COMPLEX(KIND=Rkind), ALLOCATABLE    :: dq0gg(:, :)
    COMPLEX(KIND=Rkind), ALLOCATABLE    :: dp0gb(:, :)
    COMPLEX(KIND=Rkind), ALLOCATABLE    :: dp0gg(:, :)
+   !<--- Overlap matrix
    COMPLEX(KIND=Rkind), ALLOCATABLE    :: S(:, :)   ! Overlap matrix
+   !<--- Index mapping
    TYPE(NDindex_t)                     :: NDindexq
    TYPE(NDindex_t)                     :: NDindexb
+   !<--- Sub-basis
    TYPE(Basis_t), ALLOCATABLE          :: tab_basis(:)     
 END TYPE Basis_t
 
@@ -452,7 +458,7 @@ CONTAINS
    ! Local variables
    INTEGER                              :: err_io, nb, nq, i, nb_basis, ib
    CHARACTER(LEN=Name_len)              :: name
-   REAL(KIND=Rkind)                     :: A, B, scaleQ, Q0, d0, d2, X1, W1, Imp_k
+   REAL(KIND=Rkind)                     :: A, B, scaleQ, Q0, Imp_k
    COMPLEX(KIND=Rkind)                  :: Alpha
 
    ! Namelist declaration
@@ -931,7 +937,7 @@ END SUBROUTINE construct_primitive_basis_temp
    TYPE(Basis_t), intent(in)          :: Basis
    INTEGER, intent(in)                :: nderiv
    INTEGER                            :: ib, jb
-   REAL(KIND=Rkind), ALLOCATABLE      :: S(:, :)
+   COMPLEX(KIND=Rkind), ALLOCATABLE      :: S(:,:)
    REAL(KIND=Rkind)                   :: Sii, Sij
 
    !-------------------------------------------------------------------------
@@ -979,7 +985,7 @@ END SUBROUTINE construct_primitive_basis_temp
       IF (nderiv > 1) THEN
          WRITE(out_unit,*) 
          !WRITE(out_unit,'(A)') 'Second derivative overlaps <d0b|d2b>:'
-         S = matmul(conjg(Basis%d0bgw), Basis%d2gb(:, :, 1, 1))
+         S = MATMUL(CONJG(Basis%d0bgw), Basis%d2gb(:, :, 1, 1))
          ! Optionally, format and write the matrix here
          ! CALL Write_VecMat(S, out_unit, 5, info='<d0b|d2b>')
       END IF
@@ -1514,29 +1520,27 @@ SUBROUTINE BasisTOGrid_nD_cplx(G, B, Basis)
    USE QDUtil_m
    USE NDindex_m
 
-   ! Toggle debugging output
-   LOGICAL, PARAMETER :: debug = .false.
-
    ! Input/Output arguments
    TYPE(Basis_t), INTENT(IN)                  :: Basis          ! Basis definition and metadata
    COMPLEX(KIND=Rkind), INTENT(IN), TARGET    :: B(:)           ! Input in Basis representation
    COMPLEX(KIND=Rkind), INTENT(INOUT), TARGET :: G(:)           ! Output in Grid representation
 
+ 
+   ! Optional debug output
+   LOGICAL, PARAMETER :: debug = .false.
    ! Pointers for reshaped views of arrays
    COMPLEX(KIND=Rkind), POINTER :: BBG(:, :, :), BBB(:, :, :), GGB(:, :, :)
    COMPLEX(KIND=Rkind), POINTER :: GBB(:, :, :)
 
    ! Indexing variables (flattening multidimensional data)
-   INTEGER, ALLOCATABLE :: Ib3, Iq1, Iq2, Ib1, Ib2, Iq3
+   INTEGER :: Ib3, Iq1, Iq2, Ib1, Ib2, Iq3
 
    ! Temporary working arrays
    COMPLEX(KIND=Rkind), ALLOCATABLE, TARGET :: GBB1(:), GGB2(:)
 
    ! Integer variables
-   INTEGER :: Ib, Iq, nq, nb, inb, ndim
-   INTEGER :: jb, jb1, jb2
+   INTEGER :: inb, ndim
 
-   ! Debugging: print inputs and basis
    IF (debug) THEN
        WRITE(out_unit, *) 'BEGINNING BasisTOGrid_nD_cplx'
        WRITE(out_unit, *) 'intent(in) :: B(:)', B
@@ -1652,15 +1656,17 @@ END SUBROUTINE
 
 SUBROUTINE GridTOBasis_nD_cplx(B, G, Basis)
    USE QDUtil_m
-   Logical, parameter                               :: debug = .false.
+   !Input/Output arguments
    TYPE(Basis_t), intent(in), target                :: Basis
-   complex(kind=Rkind), intent(in), target          :: G(:)         ! Input: Grid representation
-   complex(kind=Rkind), intent(inout), target       :: B(:)         ! Output: Basis representation
-   complex(kind=Rkind), pointer                     :: BBB(:, :, :), GGB(:, :, :)
-   complex(kind=Rkind), allocatable, target         :: BGG1(:), BGG2(:)
-   complex(kind=Rkind), pointer                     :: GGG(:, :, :)
-   Integer                                          :: ib, i1, i3, inb, Ndim, iq
-   Integer                                          :: Ib1, Ib2, Iq3, Iq1, Iq2, Ib3
+   COMPLEX(KIND=Rkind), intent(in), target          :: G(:)         ! Input: Grid representation
+   COMPLEX(KIND=Rkind), intent(inout), target       :: B(:)         ! Output: Basis representation
+   !Pointers for reshaped views of arrays
+   COMPLEX(KIND=Rkind), POINTER                     :: BBB(:,:,:), GGB(:,:,:) 
+   COMPLEX(KIND=Rkind), ALLOCATABLE, TARGET         :: BGG1(:), BGG2(:)
+   COMPLEX(KIND=Rkind), POINTER                     :: GGG(:,:,:) 
+   INTEGER                                          :: inb, Ndim
+   INTEGER                                          :: Ib1, Ib2, Iq3, Iq1, Iq2, Ib3
+   LOGICAL, PARAMETER :: debug = .FALSE.
 
    ! Optional debug output
    IF (debug) THEN
@@ -1759,6 +1765,7 @@ SUBROUTINE GridTOBasis_nD_cplx(B, G, Basis)
       flush (out_unit)
    END IF
 END SUBROUTINE
+
 SUBROUTINE Calc_Q_grid(Q, Basis)
    IMPLICIT NONE
 
@@ -1804,80 +1811,631 @@ SUBROUTINE Calc_Q_grid(Q, Basis)
 
 END SUBROUTINE Calc_Q_grid
 
+ SUBROUTINE Build_NUFT_Grids(Basis, Q, WQ, P, WP, Q0d)
+    IMPLICIT NONE
+  
+    !----------------------------------------------------------------
+    ! Build_NUFT_Grids :
+    !   - Fill Q(npoints_total, ndim) with position nodes (possibly non-uniform)
+    !   - Fill WQ(npoints_total) with product quadrature weights
+    !   - Build regular, centered P(npoints_total, ndim) grid suitable for NUFFT:
+    !       P component per-dimension: p_k = delta_p_j * (k_index - center_j)
+    !   - WP(:) holds the (uniform) product weight in p-space = prod_j delta_p_j
+    !   - Q0d(j) returns the center offset Q0 for each physical dimension (if present)
+    !
+    ! Assumptions:
+    !   - Basis%tab_basis(inb)%x(:)     : node coordinates (1..N_j)
+    !   - Basis%tab_basis(inb)%w(:)     : quadrature weights (1..N_j)
+    !   - Basis%tab_basis(inb)%nq       : number of points along dimension inb (integer)
+    !   - Basis%tab_basis(inb)%Q0 (opt) : center offset of the 1D grid (real), optional
+    !   - Basis%nq                       : total number of grid points (product of N_j)
+    !----------------------------------------------------------------
+  
+    ! Arguments
+    TYPE(Basis_t), INTENT(IN)                       :: Basis
+    REAL(KIND=Rkind), INTENT(INOUT), ALLOCATABLE    :: Q(:, :)
+    REAL(KIND=Rkind), INTENT(INOUT), ALLOCATABLE    :: WQ(:)
+    REAL(KIND=Rkind), INTENT(INOUT), ALLOCATABLE    :: P(:, :)
+    REAL(KIND=Rkind), INTENT(INOUT), ALLOCATABLE    :: WP(:)
+    REAL(KIND=Rkind), INTENT(OUT), ALLOCATABLE      :: Q0d(:)   ! center per dim (may be 0 if not provided)
+  
+    ! Locals
+    INTEGER, ALLOCATABLE                            :: Tab_iq(:)
+    INTEGER                                         :: inb, ndim, iq, ik, nq_total, Nj
+    REAL(KIND=Rkind),ALLOCATABLE                    :: L(:)
+    REAL(KIND=Rkind),ALLOCATABLE                    :: x_min(:)
+    REAL(KIND=Rkind),ALLOCATABLE                    :: x_max(:)
+    REAL(KIND=Rkind),ALLOCATABLE                    :: delta_p(:)
+    REAL(KIND=Rkind)                                :: prod_dp, p_step
+    LOGICAL                                         :: Endloop
+    INTEGER                                         :: center_offset, idx1d
+    INTEGER                                         :: expected_total, tmpN
+  
+  
+    ! 1) determine dimensionality and expected sizes
+    ndim = SIZE(Basis%tab_basis) - 1    ! excluding electronic index
+    IF (ndim <= 0) THEN
+       WRITE(*,*) 'Build_NUFT_Grids: ndim <= 0, nothing to do.'
+       RETURN
+    END IF
+  
+    nq_total = Basis%nq   ! total number of product points expected
+    IF (nq_total <= 0) THEN
+       WRITE(*,*) 'Build_NUFT_Grids: Basis%nq must be > 0'
+       RETURN
+    END IF
+  
+    ! allocate locals
+    ALLOCATE(Tab_iq(ndim))
+    ALLOCATE(L(ndim))
+    ALLOCATE(x_min(ndim))
+    ALLOCATE(x_max(ndim))
+    ALLOCATE(delta_p(ndim))
+  
+    ! allocate / reallocate outputs if necessary
+    IF (.NOT. ALLOCATED(Q)) THEN
+       ALLOCATE(Q(nq_total, ndim))
+    END IF
+    IF (.NOT. ALLOCATED(WQ)) THEN
+       ALLOCATE(WQ(nq_total))
+    END IF
+    IF (.NOT. ALLOCATED(P)) THEN
+       ALLOCATE(P(nq_total, ndim))
+    END IF
+    IF (.NOT. ALLOCATED(WP)) THEN
+       ALLOCATE(WP(nq_total))
+    END IF
+    IF (.NOT. ALLOCATED(Q0d)) THEN
+       ALLOCATE(Q0d(ndim))
+    END IF
+  
+    ! initialize weights and extrema
+    WQ(:) = ONE
+    x_min(:) = HUGE(ZERO)
+    x_max(:) = -HUGE(ZERO)
+    Q(:,:) = CZERO
+    P(:,:) = CZERO
+  
+    ! 2) compute expected_total from per-dimension counts (sanity check)
+    expected_total = 1
+    DO inb = 1, ndim
+       Nj = Basis%tab_basis(inb)%nq
+       expected_total = expected_total * Nj
+    END DO
+  
+    IF (expected_total /= nq_total) THEN
+       WRITE(*,*) 'Warning: product of per-dim nq (', expected_total, ') /= Basis%nq (', nq_total, ')'
+       ! proceed but be cautious
+    END IF
+  
+    ! 3) Fill Q and WQ (tensor-product enumeration)
+    CALL Init_tab_ind(Tab_iq, Basis%NDindexq)   ! prepare first multi-index according to your convention
+    iq = 0
+    Endloop = .FALSE.
+    DO
+       CALL increase_NDindex(Tab_iq, Basis%NDindexq, Endloop)
+       IF (Endloop) EXIT
+  
+       iq = iq + 1
+       IF (iq > nq_total) THEN
+          WRITE(*,*) 'Build_NUFT_Grids: filled more points than nq_total; breaking.'
+          EXIT
+       END IF
+  
+       WQ(iq) = ONE
+       DO inb = 1, ndim
+          idx1d = Tab_iq(inb)    ! index along this dimension (1..N_j)
+          Q(iq, inb) = Basis%tab_basis(inb)%x(idx1d)
+          WQ(iq) = WQ(iq) * Basis%tab_basis(inb)%w(idx1d)
+          x_min(inb) = MIN(x_min(inb), Q(iq, inb))
+          x_max(inb) = MAX(x_max(inb), Q(iq, inb))
+       END DO
+  
+    END DO
+  
+    ! ensure we've filled expected number
+    IF (iq /= nq_total) THEN
+       WRITE(*,*) 'Warning: Build_NUFT_Grids filled ', iq, ' points (expected ', nq_total, ').'
+       ! Option: trim arrays or leave as is. We proceed using iq as filled count.
+    END IF
+  
+    ! 4) compute extents L_j and delta_p_j (FFT-consistent choice)
+    DO inb = 1, ndim
+       L(inb) = x_max(inb) - x_min(inb)
+       IF (L(inb) <= ZERO) THEN
+          WRITE(*,*) 'Error: zero or negative spatial extent in dimension ', inb
+          L(inb) = ONE
+       END IF
+       ! choose delta_p_j consistent with FFT mapping delta_p = 2*pi / L
+       delta_p(inb) = (TWO * pi) / L(inb)
+    END DO
+  
+    ! 5) Build centered regular P-grid per dimension
+    !    We need per-dimension number of points N_j to determine center offset
+    !    Use Basis%tab_basis(inb)%nq for N_j
+    CALL Init_tab_ind(Tab_iq, Basis%NDindexq)   ! reset multi-index
+    iq = 0
+    Endloop = .FALSE.
+    DO
+       CALL increase_NDindex(Tab_iq, Basis%NDindexq, Endloop)
+       IF (Endloop) EXIT
+  
+       iq = iq + 1
+       IF (iq > nq_total) EXIT
+  
+       DO inb = 1, ndim
+          Nj = Basis%tab_basis(inb)%nq
+          center_offset = Nj / 2             ! integer division; for even Nj this is Nj/2
+          idx1d = Tab_iq(inb)                 ! gives 1..Nj
+          ! Build P component centered about zero:
+          P(iq, inb) = delta_p(inb) * REAL( (idx1d - 1 - center_offset), Rkind )
+       END DO
+  
+    END DO
+  
+    ! 6) compute uniform WP weights = product of per-dim delta_p
+    prod_dp = ONE
+    DO inb = 1, ndim
+       prod_dp = prod_dp * delta_p(inb)
+    END DO
+    WP(:) = prod_dp
+  
+    ! 7) return Q0d: center of each Q-dimension (use Basis%tab_basis(inb)%Q0 
+    DO inb = 1, ndim
+       Q0d(inb) = Basis%tab_basis(inb)%Q0
+    END DO
+  
+    ! 8) cleanup
+    DEALLOCATE(Tab_iq)
+    DEALLOCATE(L)
+    DEALLOCATE(x_min)
+    DEALLOCATE(x_max)
+    DEALLOCATE(delta_p)
+  
+    RETURN
+  END SUBROUTINE Build_NUFT_Grids
 
- SUBROUTINE Hermite_double_product_func(Hf, x, B1,B2,j, i)
 
-      USE QDUtil_m
-      real(kind=Rkind), intent(in)                  :: x,B1(:),B2(:)
-      complex(kind=Rkind), intent(inout)            :: Hf !f(q)
-      integer, intent(in)                           :: i, j
-      real(kind=Rkind)                              :: qi, qj
-      complex(kind=Rkind)                           ::  Hfi, Hfj
+  SUBROUTINE Print_Grids(Basis)
+   IMPLICIT NONE
+   TYPE(Basis_t), INTENT(IN) :: Basis
 
-      ! Hfi = He(I,qi) = HermiteH[I,qi/Sqrt[2]] / Sqrt [ 2^I ]
-      qi = (x - B1(1))*B1(3)
-     ! Hfi =  sqrt(B1(3))*poly_Hermite_exp_cplx(qi,B1(2)/B1(3), i- 1)
+   !< Locals ----------------------------------------------------
+   REAL(KIND=Rkind), ALLOCATABLE :: Q(:,:)   ! nq_total x ndim
+   REAL(KIND=Rkind), ALLOCATABLE :: WQ(:)     ! nq_total
+   REAL(KIND=Rkind), ALLOCATABLE :: P(:,:)   ! nq_total x ndim
+   REAL(KIND=Rkind), ALLOCATABLE :: WP(:)     ! nq_total (constant)
+   REAL(KIND=Rkind), ALLOCATABLE :: Q0d(:)    ! ndim
+   INTEGER :: ndim, nq, i, j
 
-      ! Hfj = He(J,qj) = HermiteH[J,qj/Sqrt[2]] / Sqrt [ 2^J ]
-       qj = (x - B2(1))*B2(3)
-       !Hfj= sqrt(B2(3))*poly_Hermite_exp_cplx(qj,B2(2)/B2(3), j- 1)
+   !< Build Grids ----------------------------------------------------
+   CALL Build_NUFT_Grids(Basis, Q, WQ, P, WP, Q0d)
+ 
+   ndim = SIZE(Q, 2)
+   nq   = SIZE(Q, 1)
+ 
+   WRITE(out_unit,*) "==============================================="
+   WRITE(out_unit,*) "            NUFT Grid Diagnostic               "
+   WRITE(out_unit,*) "==============================================="
+ 
+   ! print dimension and offsets
+   WRITE(out_unit,*) "Number of dimensions: ", ndim
+   WRITE(out_unit,*) "Total number of points: ", nq
+   WRITE(out_unit,*) "Centers Q0d (per dimension):"
+   WRITE(out_unit,*) (Q0d(j), j=1, ndim)
+   WRITE(out_unit,*)
+ 
+   ! print Q grid and WQ
+   WRITE(out_unit,*) "Configuration-space grid Q and weights WQ:"
+   DO i = 1, nq
+      WRITE(out_unit,*) i, (Q(i,j), j=1, ndim), " | WQ=", WQ(i)
+   END DO
+   WRITE(out_unit,*)
+ 
+   ! print P grid and WP
+   WRITE(out_unit,*) "Momentum-space grid P and weights WP:"
+   DO i = 1, nq
+      WRITE(out_unit,*) i, (P(i,j), j=1, ndim), " | WP=", WP(i)
+   END DO
+   WRITE(out_unit,*) "==============================================="
+   WRITE(out_unit,*)
+ END SUBROUTINE Print_Grids
+
+!>---------------------------------------------------------------------
+!> @brief NUFFT: Non-uniform Fast Fourier Transform (approximation)
+!> @details Computes the Fourier transform from a non-uniform position grid Q
+!>          to a uniform momentum grid P, using multidimensional dot product for phase.
+!---------------------------------------------------------------------
+SUBROUTINE NUFFT(Q, WQ, P, psi_x, psi_p)
+   IMPLICIT NONE 
+   !< Input parameters >
+   
+   REAL(KIND=Rkind), INTENT(IN)          :: Q(:,:)      ! Non-uniform position grid (nq_tot x ndim)
+   REAL(KIND=Rkind), INTENT(IN)          :: WQ(:)       ! Position weights
+   REAL(KIND=Rkind), INTENT(IN)          :: P(:,:)      ! Uniform momentum grid (nq_tot x ndim)
+   COMPLEX(KIND=Rkind), INTENT(IN)       :: psi_x(:)    ! Wavefunction in position space
+
+   !< Output >
+   COMPLEX(KIND=Rkind), INTENT(INOUT)    :: psi_p(:)    ! Wavefunction in momentum space
+
+   !< Local variables >
+   INTEGER                                :: nq_tot, ndim
+   INTEGER                                :: iq, j
+   REAL(KIND=Rkind)                       :: phase
+   COMPLEX(KIND=Rkind)                    :: sum
+   REAL(KIND=Rkind), ALLOCATABLE          :: p_vector(:), q_vector(:)
+   REAL(KIND=Rkind)                       :: normalization_factor
+
+   ! Get sizes from Q
+   nq_tot = SIZE(Q,1)
+   ndim   = SIZE(Q,2)
+   ALLOCATE(p_vector(ndim))
+   ALLOCATE(q_vector(ndim))
+   p_vector = ZERO
+   q_vector = ZERO
+
+   normalization_factor = ONE / SQRT((TWO * PI) ** ndim)
+
+   ! Loop over all points in momentum space
+   DO iq = 1, nq_tot
+       sum = CZERO
+       p_vector = P(iq, :)
+
+       ! Loop over all points in position space
+       DO j = 1, nq_tot
+           q_vector = Q(j, :)
+
+           ! Compute multidimensional phase: dot product of momentum and position vectors
+           phase = -DOT_PRODUCT(p_vector, q_vector)
+
+           ! Accumulate contribution with position weight and complex exponential
+           sum = sum + psi_x(j) * WQ(j) * CMPLX(COS(phase), SIN(phase), KIND=Rkind)
+       END DO
+
+       ! Normalization factor 1/(2*pi)^(ndim)
+       ! This factor might need adjustment based on the quadrature scheme and convention.
        
+       psi_p(iq) = sum*normalization_factor
+   END DO
+  
+   !clean up
+   DEALLOCATE(p_vector)
+   DEALLOCATE(q_vector)
 
-      !  Hf = Hfi *Hfj = He(J,x)*He(J,x)
+END SUBROUTINE NUFFT
 
-      Hf = conjg(Hfj)*Hfi
+!>---------------------------------------------------------------------
+!> @brief INV_NUFFT: Inverse Non-uniform Fast Fourier Transform
+!> @details Transforms a wavefunction from uniform momentum grid P to non-uniform
+!>          position grid Q. Uses multidimensional dot product.
+!---------------------------------------------------------------------
+SUBROUTINE INV_NUFFT(Q, WQ, P, WP, psi_p, psi_x)
+   IMPLICIT NONE
 
-   END SUBROUTINE Hermite_double_product_func
+   !< Input parameters >
+   REAL(KIND=Rkind), INTENT(IN)       :: Q(:,:)       ! Non-uniform position grid (nq_tot x ndim)
+   REAL(KIND=Rkind), INTENT(IN)       :: WQ(:)        ! Position weights
+   REAL(KIND=Rkind), INTENT(IN)       :: P(:,:)       ! Uniform momentum grid (nq_tot x ndim)
+   REAL(KIND=Rkind), INTENT(IN)       :: WP(:)        ! Momentum weights
+   COMPLEX(KIND=Rkind), INTENT(IN)    :: psi_p(:)     ! Wavefunction in momentum space
+   
+   !< Output >
+   COMPLEX(KIND=Rkind), INTENT(OUT)   :: psi_x(:)     ! Wavefunction in position space
+
+   !< Local variables >
+   INTEGER                            :: nq_tot, ndim
+   INTEGER                            :: iq, j
+   REAL(KIND=Rkind)                   :: phase
+   COMPLEX(KIND=Rkind)                :: sum
+   REAL(KIND=Rkind), ALLOCATABLE      :: p_vector(:), q_vector(:)
+   REAL(KIND=Rkind)                   :: normalization_factor
+
+   ! Get sizes from Q
+   nq_tot = SIZE(Q,1)
+   ndim   = SIZE(Q,2)
+   ALLOCATE(p_vector(ndim))
+   ALLOCATE(q_vector(ndim))
+   p_vector = ZERO
+   q_vector = ZERO
+   normalization_factor = ONE / SQRT((TWO * PI) ** ndim)
+
+   ! Loop over all points in position space
+   DO iq = 1, nq_tot
+       sum = CZERO
+       q_vector = Q(iq, :)
+
+       ! Loop over all points in momentum space
+       DO j = 1, nq_tot
+           p_vector = P(j, :)
+
+           phase = DOT_PRODUCT(p_vector, q_vector)
+
+           sum = sum + psi_p(j) * WP(j) * CMPLX(COS(phase), SIN(phase), KIND=Rkind)
+       END DO
+
+       ! Normalization factor 1/(2*pi)^(ndim)
+       psi_x(iq) = sum * normalization_factor
+   END DO
+
+   !clean up
+   DEALLOCATE(p_vector)
+   DEALLOCATE(q_vector)
+END SUBROUTINE INV_NUFFT
 
 
-   SUBROUTINE Calc_Hermitec_int(f, Q, B1,B2,j, i)
-      USE QDUtil_m
-      real(kind=Rkind), intent(in)                  :: Q(:),B1(:),B2(:)
-      complex(kind=Rkind), intent(inout)            :: f(:) 
-      integer, intent(in)                           :: i,j
-      integer                                       :: iq
+
+!=======================================================================
+! TEST_NUFFT_CYCLE: Test routine for NUFFT and INV_NUFFT
+!
+! Tests the forward and inverse non-uniform Fourier transforms
+! using a provided wavefunction structure.
+!=======================================================================
+SUBROUTINE Test_NUFFT_Cycle(psi_x,Basis)
+   IMPLICIT NONE
+
+   ! Input
+   TYPE(Basis_t), INTENT(IN)       :: Basis
+   COMPLEX(KIND=Rkind), INTENT(IN) :: psi_x(:)
+
+   ! Local variables
+   REAL(KIND=Rkind), ALLOCATABLE :: Q(:,:), P(:,:), WQ(:), WP(:),Q0d(:)
+   COMPLEX(KIND=Rkind), ALLOCATABLE :: psi_p(:), psi_x_reconstructed(:)
+   REAL(KIND=Rkind), PARAMETER :: tolerance = 1.0E-6_Rkind
+   REAL(KIND=Rkind) :: sum_diff_sq
+   INTEGER :: nq_tot, ndim, iq
+   REAL(KIND=Rkind) :: reconstruction_error
+   LOGICAL :: test_passed
+
+   ! 1. Build the non-uniform grids for position (Q) and uniform grids for momentum (P)
+   CALL Build_NUFT_Grids(Basis, Q, WQ, P, WP,Q0d)
+
+   nq_tot = SIZE(Q, 1)
+   ndim   = SIZE(Q, 2)
+
+   ! 2. Check if the input wavefunction has the correct size
+   IF (SIZE(psi_x) /= nq_tot) THEN
+       WRITE(*,*) "Error: The size of psi_x does not match the grid size."
+       RETURN
+   END IF
+
+   ! 3. Perform the forward NUFFT
+   ALLOCATE(psi_p(nq_tot))
+   CALL NUFFT(Q, WQ, P, psi_x, psi_p)
+
+   ! 4. Perform the inverse NUFFT
+   ALLOCATE(psi_x_reconstructed(nq_tot))
+   CALL INV_NUFFT(Q, WQ, P, WP, psi_p, psi_x_reconstructed)
+
+   ! 5. Compare the reconstructed wavefunction with the initial one (psi_in%CVec)
+   ! Calculate the Root Mean Square (RMS) error
+   sum_diff_sq = ZERO
+   DO iq = 1, nq_tot
+       sum_diff_sq = sum_diff_sq + (ABS(psi_x(iq) - psi_x_reconstructed(iq)))**2
+   END DO
+
+   reconstruction_error = SQRT(sum_diff_sq / nq_tot)
+   test_passed = reconstruction_error < tolerance
+
+   ! 6. Produce a report
+   WRITE(*,*) '===================================================='
+   WRITE(*,*) 'NUFFT Cycle Test Report'
+   WRITE(*,*) '===================================================='
+   WRITE(*,*) 'Total grid points (nq_tot): ', nq_tot
+   WRITE(*,*) 'Number of dimensions (ndim): ', ndim
+   WRITE(*,*) 'Tolerance: ', tolerance
+   WRITE(*,*) 'Reconstruction Error: ', reconstruction_error
+   IF (test_passed) THEN
+       WRITE(*,*) 'Test Result: PASSED'
+       WRITE(*,*) 'The reconstruction is accurate within the tolerance.'
+   ELSE
+       WRITE(*,*) 'Test Result: FAILED'
+       WRITE(*,*) 'The reconstruction error exceeds the tolerance.'
+   END IF
+   WRITE(*,*) '===================================================='
 
 
-      Do iq = 1,size(Q)
-        ! call  Hermite_double_product_func(f(iq), Q(iq), B1,B2, j, i)
-      End Do
-   END SUBROUTINE Calc_Hermitec_int
 
-   SUBROUTINE Hagedorn_ovelp_mat(Mat, nb, nq,B1,B2)
-      USE QDUtil_m
-      real(kind=Rkind), intent(in)        :: B1(:),B2(:)
-      complex(kind=Rkind),allocatable, intent(inout)  :: Mat(:,:) 
-      integer, intent(in)                 :: nq, nb
-      real(kind=Rkind), allocatable       :: Q(:), w(:)
-      complex(kind=Rkind),allocatable     :: Hf(:)
-      real(kind=Rkind)                    :: SQeq,Qeq 
-      integer                             :: iq,ib,jb
+    ! 7. Write data to files for plotting (assuming ndim=2)
+   IF (ndim == 2) THEN
+      OPEN(UNIT=10, FILE='Q_and_psi_x.txt', STATUS='REPLACE')
+      !WRITE(10, *) "x", "y", "psi_x_sq"
+      DO iq = 1, nq_tot
+          WRITE(10, *) Q(iq,1), Q(iq,2), ABS(psi_x(iq))**2
+      END DO
+      CLOSE(10)
 
-      if (allocated(Mat)) deallocate(Mat)
-      allocate (Mat(nb,nb))
-      allocate (Q(nq),w(nq),Hf(nq))
-      call hercom(nq,Q,w)
+      OPEN(UNIT=11, FILE='P_and_psi_p.txt', STATUS='REPLACE')
+      !WRITE(11, *) "px", "py", "psi_p_sq"
+      DO iq = 1, nq_tot
+          WRITE(11, *) P(iq,1), P(iq,2), ABS(psi_p(iq))**2
+      END DO
+      CLOSE(11)
+   END IF
 
-    SQeq = sqrt(B1(3)*B1(3) + B2(3)*B2(3))/sqrt(TWO)
-    Qeq = (B1(3)*B1(3)*B1(1) + B2(3)*B2(3)*B2(1))/(B1(3)*B1(3) + B2(3)*B2(3))
-    w(:) = w(:)/SQeq
-     Q(:) = Qeq+Q(:)/SQeq
+   ! 7. Deallocate arrays
+   DEALLOCATE(Q, P, WQ, WP)
+   DEALLOCATE(psi_p, psi_x_reconstructed)
 
-    !print*,"Q",Q
-      !print*,"w",w
-      Do jb = 1,nb
-         Do ib = 1,nb
-            !call Calc_Hermitec_int(Hf, Q, B1,B2, jb, ib)
-            Mat(jb,ib) = dot_product(Hf, w)
-         End Do
-      End Do
+END SUBROUTINE Test_NUFFT_Cycle
 
-      deallocate (Hf,q,w)
-      print*,"first basis parameters",B1
-      print*,"second basis parameters",B2
-      CALL  Write_VecMat(Mat, out_unit, 5,  info='Mat')
 
-   END SUBROUTINE 
+
+SUBROUTINE ApplyExpVdtAndTransformToMomentum(psi_x, psi_p, V, dt, Q, WQ, P, WP,transform)
+   ! ------------------------------------------------------------
+   ! Apply exp(-i V(q) dt/2) on psi_x, then Fourier transform
+   ! each surface to momentum space (psi_p).
+   !
+   ! Input:
+   !   Q(nq,ndim) : position quadrature
+   !   WQ(nq)     : quadrature weights in position
+   !   P(np,ndim) : momentum quadrature
+   !   WP(np)     : quadrature weights in momentum
+   !   V(nq,nsurf,nsurf) : potential (diagonal in surface index)
+   !   dt         : time step
+   !
+   ! Input/Output:
+   !   psi_x(:)   : wavefunction in position space (vectorized: nq*nsurf)
+   !   psi_p(:)   : wavefunction in momentum space (vectorized: np*nsurf)
+   ! ------------------------------------------------------------
+ 
+   IMPLICIT NONE
+   REAL(KIND=Rkind), INTENT(IN) :: Q(:,:), P(:,:), WQ(:), WP(:)
+   REAL(KIND=Rkind), INTENT(IN) :: V(:,:,:)
+   REAL(KIND=Rkind), INTENT(IN) :: dt
+   COMPLEX(KIND=Rkind), INTENT(IN), TARGET :: psi_x(:)
+   COMPLEX(KIND=Rkind), INTENT(INOUT),   TARGET :: psi_p(:)
+   LOGICAL, INTENT(IN),OPTIONAL :: transform
+ 
+   ! Work arrays and pointers
+   COMPLEX(KIND=Rkind), ALLOCATABLE, TARGET :: tmp(:)
+   COMPLEX(KIND=Rkind), POINTER :: Psi_gb(:, :), Psi_pb(:, :), Psi_gbtemp(:, :)
+ 
+   INTEGER :: nq, nsurf, np,ndim
+   INTEGER :: iq, isurf,jsurf
+   COMPLEX(KIND=Rkind) :: phase
+ 
+   nq    = SIZE(Q,1)
+   np    = SIZE(P,1)
+   nsurf = SIZE(V,2)
+   ndim = SIZE(Q,2)
+ 
+   ! --- Map input vectors to 2D views ---
+   Psi_gb(1:nq,1:nsurf) => psi_x
+   Psi_pb(1:np,1:nsurf) => psi_p
+
+   ! --- Temporary buffer for modified wavefunction ---
+   ALLOCATE(tmp(nq*nsurf))
+   tmp = CZERO
+   Psi_gbtemp(1:nq,1:nsurf) => tmp
+
+ 
+   ! --- Apply exp(-i V dt/2) (diagonal only) ---
+   DO iq = 1, nq
+      DO isurf = 1, nsurf
+         phase = CZERO
+         DO jsurf = 1, nsurf
+           phase =  phase  -EYE*HALF * dt * V(iq,isurf,jsurf)
+           Psi_gbtemp(iq,isurf) = Psi_gb(iq,isurf) *EXP(phase)
+         END DO
+      END DO
+   END DO
+ 
+   ! --- Transform each surface separately to momentum space ---
+   IF(PRESENT(transform)) THEN
+      IF(transform) THEN
+         DO isurf = 1, nsurf
+            CALL NUFFT(Q, WQ, P, Psi_gbtemp(:,isurf), Psi_pb(:,isurf))
+         END DO
+
+      ELSE 
+         WRITE(out_unit,*) 'ApplyExpVdtAndTransformToMomentum: transform = .FALSE.'
+         psi_p(:) = tmp(:)
+      END IF
+   ELSE
+      ! Default to transform
+      DO isurf = 1, nsurf
+         CALL NUFFT(Q, WQ, P, Psi_gbtemp(:,isurf), Psi_pb(:,isurf))
+      END DO
+   END IF
+ 
+   ! --- Cleanup ---
+   DEALLOCATE(tmp)
+   NULLIFY(Psi_gb, Psi_pb, Psi_gbtemp)
+ 
+ END SUBROUTINE ApplyExpVdtAndTransformToMomentum
+
+ SUBROUTINE ApplyExpTdtAndTransformToPosition(psi_p, psi_x, Q, WQ, P, WP, dt)
+   ! ------------------------------------------------------------
+   ! Applies exp(-i T dt) in momentum space
+   ! then transforms the wavefunction back to position space
+   ! using an inverse NUFFT.
+   !
+   ! Steps:
+   !   1. Applies the kinetic energy propagator: psi_p = exp(-i*T*dt) * psi_p
+   !   2. Performs an inverse NUFFT: psi_x = F^{-1}(psi_p)
+   !
+   ! Inputs:
+   !   P   (np, ndim) : Momentum grid points
+   !   WP  (np)       : Quadrature weights for momentum space
+   !   Q   (nq, ndim) : Position grid points
+   !   WQ  (nq)       : Quadrature weights for position space
+   !   dt             : Time step
+   !
+   ! Input/Output:
+   !   psi_p(np*nsurf) : Wavefunction in momentum space (vector input). Overwritten with intermediate result.
+   !   psi_x(nq*nsurf) : Wavefunction in position space (output).
+   ! ------------------------------------------------------------
+   IMPLICIT NONE
+ 
+   ! Arguments
+   REAL(KIND=Rkind),    INTENT(IN)    :: P(:,:), WP(:), Q(:,:), WQ(:), dt
+   COMPLEX(KIND=Rkind), INTENT(INOUT),TARGET :: psi_p(:) 
+   COMPLEX(KIND=Rkind), INTENT(OUT)  ,TARGET :: psi_x(:) 
+ 
+   ! Local variables
+   INTEGER :: np, nq, ndim, nsurf, isurf, ip, i
+   REAL(KIND=Rkind) :: Tval
+   REAL(KIND=Rkind), ALLOCATABLE :: GGdef(:,:)
+   COMPLEX(KIND=Rkind), ALLOCATABLE ,TARGET :: work_array(:) ! Work array for the operation
+ 
+   ! Pointers for easier array manipulation
+   COMPLEX(KIND=Rkind), POINTER :: Psi_gb(:,:), Psi_pb(:,:), Psi_pb_work(:,:)
+ 
+   ! Get dimensions from input arrays
+   np    = SIZE(P, 1)
+   nq    = SIZE(Q, 1)  ! Corrected: Get nq from input argument Q
+   ndim  = SIZE(P, 2)
+   nsurf = SIZE(psi_p) / np ! Calculate number of surfaces/states
+ 
+   ! Check output array size
+   IF (SIZE(psi_x) /= nq * nsurf) THEN
+     WRITE(*,*) 'ERROR in ApplyExpTdtAndTransformToPosition: size mismatch for psi_x'
+     WRITE(*,*) 'Expected size: ', nq * nsurf, ' Actual size: ', SIZE(psi_x)
+     STOP
+   END IF
+ 
+   ! Allocate and get the inverse mass metric 
+   ALLOCATE(GGdef(ndim, ndim))
+   CALL get_Qmodel_GGdef(GGdef) 
+ 
+   ! Map 1D vectors to 2D arrays using pointers for clarity
+   Psi_gb(1:nq, 1:nsurf)     => psi_x
+   Psi_pb(1:np, 1:nsurf)     => psi_p
+ 
+   ! Allocate a work array and copy input psi_p into it
+   ALLOCATE(work_array(SIZE(psi_p)))
+   work_array(:) = psi_p(:) ! Copy the input wavefunction
+   Psi_pb_work(1:np, 1:nsurf) => work_array
+ 
+   ! Apply exp(-i * T * dt) in momentum space
+   ! T = 0.5 * sum_{i} GGdef(i,i) * P_i^2
+   DO isurf = 1, nsurf
+     DO ip = 1, np
+       Tval = ZERO
+       ! Calculate kinetic energy T for this momentum point P(ip, :)
+       DO i = 1, ndim
+         Tval = Tval + HALF * GGdef(i, i) * P(ip, i)**2
+       END DO
+       ! Apply the propagator: Multiply the wavefunction by exp(-i*T*dt)
+       Psi_pb_work(ip, isurf) = Psi_pb_work(ip, isurf) * EXP(-EYE * Tval * dt)
+     END DO
+   END DO
+ 
+   ! Inverse NUFFT: Transform from momentum (p) to position (x) space
+   DO isurf = 1, nsurf
+     CALL INV_NUFFT(Q, WQ, P, WP, Psi_pb_work(:, isurf), Psi_gb(:, isurf))
+   END DO
+ 
+   ! Clean up
+   DEALLOCATE(work_array, GGdef)
+   ! Nullify pointers to avoid potential dangling references
+   NULLIFY(Psi_gb, Psi_pb, Psi_pb_work)
+ 
+ END SUBROUTINE ApplyExpTdtAndTransformToPosition
+
+
+
+
    
     SUBROUTINE d2psi1D_cplx(d2GGB,GGB,Basis)
     USE QDUtil_m
@@ -1926,7 +2484,7 @@ END SUBROUTINE Calc_Q_grid
     complex(kind=Rkind), pointer                    :: d2gg(:, :)
     complex(kind=Rkind), pointer                    :: d2psi_ggb(:, :, :)
     logical, parameter                              :: debug = .true.
-    integer                                         :: iq, i1, i3, Ndim
+    integer                                         :: i1, i3, Ndim
     integer, allocatable                            :: Iq1(:), Iq2(:), Iq3(:), Ib1(:), Ib2(:), Ib3(:)
 
     IF (debug) THEN
@@ -2002,7 +2560,7 @@ END SUBROUTINE Calc_Q_grid
     !Locals variables ----------------------------------------------------------------------------
 
     integer, allocatable                                         :: Tab_iq(:)
-    integer                                                      :: ndim, Iq,nq,inb,ib
+    integer                                                      :: ndim, Iq,inb,ib
     real(Kind=Rkind)                                             :: W
     logical                                                      :: Endloop
       ndim  = SIZE(Basis%tab_basis) - 1
@@ -2156,9 +2714,8 @@ END SUBROUTINE
       TYPE(REDUCED_DENSIRY_t),intent(inout)           :: Rdensity
 
         TYPE(REDUCED_DENSIRY_t)                       :: Rdensitytemp
-        real(kind=Rkind)                              :: Norm 
         complex(kind=Rkind),allocatable               :: G(:),Gsurf(:)
-        integer                                       :: nsurf,nq,ibe,iq,ndim,ib
+        integer                                       :: nsurf,nq,ibe,ndim,ib
 
          nsurf = Basis%tab_basis(size(Basis%tab_basis))%nb
          nq = nsurf*Basis%nq
@@ -2232,8 +2789,8 @@ END SUBROUTINE
         DO inb = 1, ndim
            W = W*Basis%tab_basis(inb)%w(tab_iq(inb))
         END DO
-       Nel(inbe) = Nel(inbe) + conjg(psi_gb1(iq, inbe))*psi_gb1(iq, inbe)*W
-       Intel(inbe) = Intel(inbe) + psi_gb1(iq, inbe)*psi_gb2(iq, inbe)*W
+       Nel(inbe) = Nel(inbe) + REAL(CONJG(psi_gb1(iq, inbe))*psi_gb1(iq, inbe)*W,kind=Rkind)
+       Intel(inbe) = Intel(inbe) + REAL(CONJG(psi_gb1(iq, inbe))*psi_gb2(iq, inbe)*W,kind=Rkind)
     END DO
  END DO
  Int = sum(Intel)/(Sum(Nel)**2)
@@ -2245,99 +2802,7 @@ END SUBROUTINE
  END IF
 END SUBROUTINE
 
-SUBROUTINE Calc_d0d1d2W_temp(Q, Qt, SQt, Bt, Pt, d0W, d1W, d2W, nderiv)
-   IMPLICIT NONE
-   REAL(kind=Rkind),    INTENT(IN)     :: Q       ! Position
-   REAL(kind=Rkind),    INTENT(IN)     :: Qt      ! Center of Gaussian
-   REAL(kind=Rkind),    INTENT(IN)     :: SQt     ! Width (std dev)
-   REAL(kind=Rkind),    INTENT(IN)     :: Bt      ! Related to complex width
-   REAL(kind=Rkind),    INTENT(IN)     :: Pt      ! Momentum
-   LOGICAL,             INTENT(IN)     :: nderiv  ! Flag to compute derivatives
- 
-   COMPLEX(kind=Rkind), INTENT(INOUT)  :: d0W     ! complex exponential part of the gaussian value
-   COMPLEX(kind=Rkind), INTENT(INOUT)  :: d1W     ! First derivative of the complex exponential part of the gaussian value
-   COMPLEX(kind=Rkind), INTENT(INOUT)  :: d2W     ! Second derivative of the complex exponential part of the gaussian value
- 
-   ! === Local variables ===
-   COMPLEX(kind=Rkind) :: cst, cst1, cst2
-   REAL(kind=Rkind)    :: DQ
- 
-   ! === Compute Q - Qt
-   DQ = Q - Qt
- 
-   ! === Compute exponential part of the wavefunction
-   cst = -HALF * EYE * (Bt / (SQt * SQt)) * Q * Q + EYE * (Pt / SQt) * Q
- 
-   ! === Derivatives of the exponential (symbolic form)
-   cst1 = -EYE * (Bt / (SQt * SQt)) * Q + EYE * (Pt / SQt)
-   cst2 = -EYE * (Bt / (SQt * SQt)) + cst1 * cst1
- 
-   ! === Set output values
-   IF (nderiv) THEN
-     d0W = EXP(cst)
-     d1W = cst1 * d0W
-     d2W = cst2 * d0W
-   ELSE
-     d0W = EXP(cst)
-     d1W = CZERO
-     d2W = CZERO
-   END IF
- 
-   ! Uncomment for debugging:
-   ! PRINT *, 'd0W = ', d0W, ' d1W = ', d1W, ' d2W = ', d2W
- 
- END SUBROUTINE Calc_d0d1d2W_temp
 
-
- SUBROUTINE Calc_d0d1d2W(Q, Qt, SQt, Bt, Pt, d0W, d1W, d2W, nderiv)
-   IMPLICIT NONE
- 
-   ! === Input ===
-   REAL(kind=Rkind),    INTENT(IN)     :: Q        ! Position
-   REAL(kind=Rkind),    INTENT(IN)     :: Qt       ! Center of the wave packet
-   REAL(kind=Rkind),    INTENT(IN)     :: SQt      ! Width of the Gaussian (not used here)
-   REAL(kind=Rkind),    INTENT(IN)     :: Bt       ! Imaginary width parameter
-   REAL(kind=Rkind),    INTENT(IN)     :: Pt       ! Momentum
-   LOGICAL,             INTENT(IN)     :: nderiv   ! Flag to compute derivatives
- 
-   ! === Output ===
-   COMPLEX(kind=Rkind), INTENT(INOUT)  :: d0W      ! complex exponential part of the gaussian value
-   COMPLEX(kind=Rkind), INTENT(INOUT)  :: d1W      ! First derivative of the complex exponential part of the gaussian value
-   COMPLEX(kind=Rkind), INTENT(INOUT)  :: d2W      ! Second derivative of the complex exponential part of the gaussian value
- 
-   ! === Local variables ===
-   COMPLEX(kind=Rkind) :: cst, cst1, cst2
-   REAL(kind=Rkind)    :: DQ  ! Displacement Q - Qt
- 
-   ! === Compute displacement from the center
-   DQ = Q - Qt
- 
-   ! === Compute wavefunction and its derivatives
-   IF (nderiv) THEN
-      ! Compute complex phase for wavefunction
-      cst  = -EYE * HALF * Bt * DQ * DQ + EYE * Pt * DQ
-      ! First derivative of the exponential argument
-      cst1 = -EYE * Bt * DQ + EYE * Pt
-      ! Second derivative of the exponential argument
-      cst2 = -EYE * Bt + cst1 * cst1
- 
-      ! Compute wavefunction and derivatives
-      d0W = EXP(cst)
-      d1W = cst1 * d0W
-      d2W = cst2 * d0W
- 
-   ELSE
-      ! Only compute the exponential part, derivatives are set to zero
-      cst  = -EYE * HALF * Bt * DQ * DQ + EYE * Pt * DQ
-      d0W  = EXP(cst)
-      d1W  = CZERO
-      d2W  = CZERO
-   END IF
- 
-   ! Uncomment this line for debugging:
-   ! PRINT *, 'd0W = ', d0W, ' d1W = ', d1W, ' d2W = ', d2W
- 
- END SUBROUTINE Calc_d0d1d2W
 
  SUBROUTINE Change_Basis_Parameters(Basis, Qt, SQt, At, Pt)
    IMPLICIT NONE

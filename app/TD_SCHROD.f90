@@ -12,18 +12,18 @@ PROGRAM TD_SCHROD
 
    !======================= Main Variables ===========================
    TYPE(Basis_t), TARGET         :: Basis        ! Basis object
-   TYPE(Op_t)                    :: H            ! Hamiltonian operator
+   TYPE(Op_t)                    :: H !,Op           ! Hamiltonian operator
    TYPE(psi_t)                   :: psi0, psif   ! Initial and final wavefunctions
    TYPE(propa_t)                :: propa        ! Propagation parameters
    TYPE(GWP_t), ALLOCATABLE     :: tab_GWP(:)   ! Gaussian wavepacket parameters
    INTEGER, ALLOCATABLE         :: Tab_iq(:, :) ! Index mapping for operator setup
-   REAL(Kind=Rkind), ALLOCATABLE :: V(:, :, :)  ! Scalar potential (optional)
+   !REAL(Kind=Rkind), ALLOCATABLE :: V(:, :, :)  ! Scalar potential (optional)
 
    ! Variables for initial WP parameters
-   REAL(Kind=Rkind) :: E, E0, Norm
-   REAL(Kind=Rkind) :: Pt(2), Qt(2), SQt(2)
-   COMPLEX(Kind=Rkind) :: At(2)
-   REAL(Kind=Rkind) :: t_deltat = 0
+   REAL(Kind=Rkind) :: E, Norm
+   !REAL(Kind=Rkind) :: Pt(2), Qt(2), SQt(2)
+   !COMPLEX(Kind=Rkind) :: At(2)
+   !REAL(Kind=Rkind) :: t_deltat = 0
 
    !======================= QML and Potential Info ====================
    INTEGER :: ndim, nsurf, option
@@ -41,6 +41,7 @@ PROGRAM TD_SCHROD
    CALL sub_Init_Qmodel(ndim, nsurf, pot_name, adiabatic, option)
    WRITE(out_unit, *) 'ndim, nsurf', ndim, nsurf
    WRITE(out_unit, *) 'pot_name'
+   
 
    !===================================================================
    ! Read basis set parameters from input file and construct basis
@@ -65,7 +66,7 @@ PROGRAM TD_SCHROD
    ! Construct operator H
    CALL Calc_tab_Iq0(Tab_Iq, psi0%Basis)
    !stop 'cc'
-   CALL Set_Op(H, psi0%Basis, Tab_Iq)
+   CALL Set_Op(H, psi0%Basis, Tab_Iq,alloc=.TRUE.)
 
    ! Initialize psi0 using the GWP parameters
    CALL psi_init_GWP(psi=psi0, Tab_GWP=tab_GWP)
@@ -92,13 +93,16 @@ PROGRAM TD_SCHROD
    !CALL Test_projection_hagedorn(Basis, psi0)
    !CALL test_op(Basis, psi0)  ! Diagonalization test
    !CALL Calc_Scalar_Pot(V, Basis)
-   !CALL Make_Mat_H(H)
    !CALL test_openmp_op(Basis)
    !CALL calc_nac(Basis)
    !CALL calc_VV(Basis)
 
    ! Read propagation parameters
    CALL read_propa(propa)
+   !CALL Make_Mat_H(Basis,Op)
+
+   !CALL Print_Grids(Basis)
+   !CALL Test_NUFFT_Cycle(psi0%CVec,Basis)
 
    !CALL test_taylor(psi0, psif, propa, H)
    !STOP 'calcul de H|psi> est fait'

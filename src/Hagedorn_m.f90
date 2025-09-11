@@ -9,15 +9,11 @@ module Hagedorn_m
    implicit none
    PRIVATE
      !> Public interfaces for Hagedorn basis construction and projection operations
-   PUBLIC :: Projection_temp                  ! Temporary projection routine
-   PUBLIC :: test_psi_temp                    ! Temporary test of psi
-   PUBLIC :: Calc_Basis_parameters, Calc_Basis_parameters_temp ! Compute basis parameters from a psi structure
-   PUBLIC :: march_Hagedorn                   ! Marching algorithm using Hagedorn method
+   PUBLIC :: Calc_Basis_parameters ! Compute basis parameters from a psi structure
    PUBLIC :: march_Global                     ! Global propagation step
    
      !> Hagedorn propagation and testing routines
-   PUBLIC :: Hagedorn_inv                     ! Hagedorn propagation with inversion
-   PUBLIC :: Hagedorn_temp                    ! Temporary Hagedorn routine
+   PUBLIC :: Hagedorn                         ! Hagedorn routine
    PUBLIC :: Test_Calc_S                      ! Test routine for computing matrix S
    PUBLIC :: Test_projection_hagedorn         ! Test of projection method using Hagedorn basis
    
@@ -27,64 +23,8 @@ module Hagedorn_m
    
      !> Hagedorn basis construction routines
    PUBLIC :: Construct_Hagedorn_none_Variational_Basis       ! Construct non-variational Hagedorn basis
-   PUBLIC :: Construct_Hagedorn_none_Variational_Basis_temp  ! Temporary version of non-variational Hagedorn basis
    
 CONTAINS
-
-SUBROUTINE Construct_Hagedorn_none_Variational_Basis(Basis, Qt, SQt, At, Pt)
-  USE QDUtil_m
-  IMPLICIT NONE
-
-  ! === Input/Output Arguments ===
-  TYPE(Basis_t),            INTENT(INOUT)  :: Basis      ! Basis structure to update
-  REAL(kind=Rkind),         INTENT(IN)     :: Qt(:)      ! <Q>
-  REAL(kind=Rkind),         INTENT(IN)     :: SQt(:)     ! sqrt(<Q²> - <Q>²)
-  COMPLEX(kind=Rkind),      INTENT(IN)     :: At(:)      ! Complex Gaussian widths
-  REAL(kind=Rkind),         INTENT(IN)     :: Pt(:)      ! <P>
-
-  ! === Local variables ===
-  REAL(kind=Rkind), ALLOCATABLE :: Q0(:), SQ0(:), P0(:)
-  COMPLEX(kind=Rkind), ALLOCATABLE :: A0(:)
-  INTEGER :: ndim, ib, nb, nq, i
-
-  ! === Determine number of dimensions (excluding electronic)
-  ndim = SIZE(Basis%tab_basis) - 1
-
-  ! === Allocate arrays to hold original basis parameters
-  ALLOCATE(Q0(ndim), SQ0(ndim), P0(ndim), A0(ndim))
-
-  ! === Store the current basis parameters (before change)
-  CALL Get_Basis_Parameters(Basis, Q0, SQ0, A0, P0)
-
-  ! === Update basis parameters with new Qt, SQt, At, Pt
-  CALL Change_Basis_Parameters(Basis, Qt, SQt, At, Pt)
-
-  ! === Rebuild primitive basis structure
-  CALL construct_primitive_basis_temp(Basis)
-
-  ! === For each dimension, calculate transformation matrix S
-  DO ib = 1, ndim
-    nb = Basis%tab_basis(ib)%nb
-    nq = Basis%tab_basis(ib)%nq
-
-    IF (Basis%tab_basis(ib)%Basis_name == 'herm' .OR. &
-        Basis%tab_basis(ib)%Basis_name == 'ho') THEN
-
-      ! Compute transformation matrix between old and new basis
-      CALL Calc_S(Basis%tab_basis(ib)%S, nb, nq, &
-                  Q0(ib), SQ0(ib), A0(ib), P0(ib), &
-                  Qt(ib), SQt(ib), At(ib), Pt(ib))
-
-    ELSE
-      ! Set identity matrix for non-Hagedorn or non-HO basis types
-      call build_identity_matrix(Basis%tab_basis(ib)%S, nb)
-    END IF
-  END DO
-
-  ! === Clean up: deallocate local arrays
-  DEALLOCATE(Q0, SQ0, P0, A0)
-
-END SUBROUTINE Construct_Hagedorn_none_Variational_Basis
 
 subroutine build_identity_matrix(Id, n)
   implicit none
@@ -105,7 +45,7 @@ subroutine build_identity_matrix(Id, n)
 
 end subroutine build_identity_matrix
 
-SUBROUTINE Construct_Hagedorn_none_Variational_Basis_temp(Basis, Qt, SQt, At, Pt)
+SUBROUTINE Construct_Hagedorn_none_Variational_Basis(Basis, Qt, SQt, At, Pt)
   USE QDUtil_m
   IMPLICIT NONE
 
@@ -126,6 +66,11 @@ SUBROUTINE Construct_Hagedorn_none_Variational_Basis_temp(Basis, Qt, SQt, At, Pt
 
   ! === Allocate arrays to store current basis parameters
   ALLOCATE(Q0(ndim), SQ0(ndim), P0(ndim), A0(ndim))
+  !<--- Initialize arrays to zero
+  Q0(:) = ZERO
+  SQ0(:) = ZERO
+  P0(:) = ZERO
+  A0(:) = CZERO
 
   ! === Get original basis parameters
   CALL Get_Basis_Parameters(Basis, Q0, SQ0, A0, P0)
@@ -155,80 +100,101 @@ SUBROUTINE Construct_Hagedorn_none_Variational_Basis_temp(Basis, Qt, SQt, At, Pt
   ! === Cleanup: deallocate local arrays
   DEALLOCATE(Q0, SQ0, P0, A0)
 
-END SUBROUTINE Construct_Hagedorn_none_Variational_Basis_temp
-SUBROUTINE Calc_Basis_parameters(psi, Qt, SQt, At, Pt)
+END SUBROUTINE Construct_Hagedorn_none_Variational_Basis
+
+!=======================================================================
+!  SUBROUTINE: Calc_Basis_parameters
+!
+!  PURPOSE:
+!    This routine computes key observables of a quantum wavefunction ψ
+!    expressed in a given basis. The following quantities are evaluated:
+!      - Qt(:)   : Expectation value(s) of position <Q>
+!      - SQt(:)  : Standard deviation(s) of position
+!      - Pt(:)   : Expectation value(s) of momentum <P>
+!      - At(:)   : Complex width parameter "A" (related to squeezing/β)
+!
+!    The behavior depends on whether propagation settings (propa) are given:
+!
+!      1) Without "propa" (diagnostic mode):
+!         → Compute all quantities (Qt, SQt, Pt, At).
+!
+!      2) With "propa" (propagation mode):
+!         → Initialize Pt=0, At=SQt^2 by default.
+!         → If propa%P    = .TRUE., compute <P>.
+!         → If propa%Beta = .TRUE., compute "A".
+!
+!    This design allows a unified interface:
+!       - In analysis mode (no "propa"): always compute everything.
+!       - In propagation mode: compute only what is needed, saving CPU time.
+!
+!  INPUT:
+!    psi   : Wavefunction object of type psi_t (contains basis + coefficients).
+!    propa : (optional) Propagation settings of type propa_t.
+!
+!  OUTPUT (modified in place):
+!    Qt(:), SQt(:), Pt(:), At(:)
+!
+!  NOTES:
+!    - Uses an integration index table Tab_Iq, allocated internally.
+!    - Ensures clean memory handling (Tab_Iq is always deallocated).
+!=======================================================================
+SUBROUTINE Calc_Basis_parameters(psi, Qt, SQt, At, Pt, propa)
    USE psi_m
    IMPLICIT NONE
-  
+
    ! === Interfaces ===
-   TYPE(psi_t),         INTENT(IN)     :: psi         ! Input wavefunction
-   REAL(kind=Rkind),    INTENT(INOUT)  :: Qt(:)       ! Expectation value of position <Q>
-   REAL(kind=Rkind),    INTENT(INOUT)  :: SQt(:)      ! Standard deviation of position
-   COMPLEX(kind=Rkind), INTENT(INOUT)  :: At(:)       ! Complex width parameter A
-   REAL(kind=Rkind),    INTENT(INOUT)  :: Pt(:)       ! Expectation value of momentum <P>
-  
+   TYPE(psi_t),          INTENT(IN)     :: psi        ! Wavefunction input
+   REAL(kind=Rkind),     INTENT(INOUT)  :: Qt(:)      ! Position expectation value <Q>
+   REAL(kind=Rkind),     INTENT(INOUT)  :: SQt(:)     ! Std deviation of position
+   COMPLEX(kind=Rkind),  INTENT(INOUT)  :: At(:)      ! "A" parameter (complex width)
+   REAL(kind=Rkind),     INTENT(INOUT)  :: Pt(:)      ! Momentum expectation value <P>
+   TYPE(propa_t), OPTIONAL, INTENT(IN)  :: propa      ! Propagation settings (optional)
+
    ! === Local variables ===
-   INTEGER, ALLOCATABLE                :: Tab_Iq(:, :)  ! Index table for integration
-  
-   ! === Build index table for integration (e.g. <ψ|Q|ψ>, <ψ|Q²|ψ>, etc.)
+   INTEGER, ALLOCATABLE                :: Tab_Iq(:, :)
+
+   ! ---------------------------------------------------------------
+   ! Build integration index table (used for <ψ|Q|ψ>, <ψ|Q²|ψ>, etc.)
+   ! ---------------------------------------------------------------
    CALL Calc_tab_Iq0(Tab_Iq, psi%Basis)
-  
-   ! === Compute expectation values of Q and its standard deviation
+
+   ! ---------------------------------------------------------------
+   ! Compute expectation values of Q and its standard deviation
+   ! ---------------------------------------------------------------
    CALL Calc_AVQ_SQ_nD(psi, Qt, SQt, Tab_Iq)
-  
-   ! === Compute expectation value of the momentum operator
-   CALL Calc_Av_imp_k_nD(psi, Pt)
-  
-   ! === Compute complex width parameter A (related to beta/squeezing)
-   CALL Calc_Avg_A_nD(psi, At)
-  
-   ! === Deallocate index table
-   DEALLOCATE(Tab_Iq)
-  
- END SUBROUTINE Calc_Basis_parameters
-  
- SUBROUTINE Calc_Basis_parameters_temp(psi, Qt, SQt, At, Pt, propa)
-   USE psi_m
-   IMPLICIT NONE
-  
-   ! === Interfaces ===
-   TYPE(psi_t),       INTENT(IN)     :: psi        ! Wavefunction input
-   TYPE(propa_t),     INTENT(IN)     :: propa      ! Propagation settings
-   REAL(kind=Rkind),  INTENT(INOUT)  :: Qt(:)      ! Position expectation value <Q>
-   REAL(kind=Rkind),  INTENT(INOUT)  :: SQt(:)     ! Width sqrt(<Q^2> - <Q>^2)
-   REAL(kind=Rkind),  INTENT(INOUT)  :: Pt(:)      ! Momentum expectation <P>
-   COMPLEX(kind=Rkind), INTENT(INOUT):: At(:)      ! "A" parameter (related to Gaussian width)
-  
-   ! === Local ===
-   INTEGER, ALLOCATABLE              :: Tab_Iq(:, :)
-  
-   ! === Compute the index table.
-   CALL Calc_tab_Iq0(Tab_Iq, psi%Basis)
-  
-   ! === Default initialization
-   Pt(:) = ZERO
-  
-   ! === Compute <Q> and Sqrt(<Q^2> - <Q>^2)
-   CALL Calc_AVQ_SQ_nD(psi, Qt, SQt, Tab_Iq)
-  
-   ! === Set At = SQt^2 by default
-   At(:) = SQt(:) * SQt(:)
-  
-   ! === Optionally compute momentum expectation value
-   IF (propa%P) THEN
+
+   ! ---------------------------------------------------------------
+   ! Case 1: If "propa" is present → selective computation
+   ! ---------------------------------------------------------------
+   IF (PRESENT(propa)) THEN
+      ! Default initialization
+      Pt(:) = ZERO
+      At(:) = SQt(:) * SQt(:)
+
+      ! Momentum expectation value <P>
+      IF (propa%P) THEN
+         CALL Calc_Av_imp_k_nD(psi, Pt)
+      END IF
+
+      ! Complex width parameter A
+      IF (propa%Beta) THEN
+         CALL Calc_Avg_A_nD(psi, At)
+      END IF
+
+   ! ---------------------------------------------------------------
+   ! Case 2: No "propa" provided → compute everything fully
+   ! ---------------------------------------------------------------
+   ELSE
       CALL Calc_Av_imp_k_nD(psi, Pt)
-   END IF
-  
-   ! === Optionally compute complex A parameters
-   IF (propa%Beta) THEN
       CALL Calc_Avg_A_nD(psi, At)
    END IF
-  
-   ! === Deallocate index table
-   DEALLOCATE(Tab_Iq)
-  
- END SUBROUTINE Calc_Basis_parameters_temp
 
+   ! ---------------------------------------------------------------
+   ! Cleanup
+   ! ---------------------------------------------------------------
+   DEALLOCATE(Tab_Iq)
+
+END SUBROUTINE Calc_Basis_parameters
 
 SUBROUTINE Calc_S(S,nb,nq,Q0,SQ0,A0,P0,Qt,SQt,At,Pt)
 
@@ -405,92 +371,6 @@ subroutine build_overlap_matrices(B1, B2)
 
 end subroutine build_overlap_matrices
 
-
-
-  SUBROUTINE projection_1D(BBB2, BBB1, Basis)
-     USE QDUtil_m
-     TYPE(Basis_t), intent(in), target              :: Basis
-     complex(kind=Rkind), intent(inout)             :: BBB2(:, :, :)
-     complex(kind=Rkind), intent(in)                :: BBB1(:, :, :)
-     logical, parameter                             :: debug = .true.
-     Integer                                        :: i1, i3
-   
-     IF (debug) THEN
-        flush (out_unit)
-     END IF
-     BBB2 = CZERO
-     DO i3 = 1, ubound(BBB1, dim=3)
-     DO i1 = 1, ubound(BBB1, dim=1)
-        BBB2(i1, :, i3) =  matmul(Basis%S,BBB1(i1, :, i3))
-     END DO
-     END DO
-     IF (debug) THEN
-        flush (out_unit)
-     END IF
- END SUBROUTINE
-
-  SUBROUTINE projection_1D_temp(BBB2, BBB1, S)
-    USE QDUtil_m
-    complex(kind=Rkind), intent(inout)             :: BBB2(:, :, :)
-    complex(kind=Rkind), intent(in)                :: BBB1(:, :, :),S(:,:)
-    logical, parameter                             :: debug = .true.
-    Integer                                        :: i1, i3
-  
-    IF (debug) THEN
-       flush (out_unit)
-    END IF
-    BBB2 = CZERO
-    DO i3 = 1, ubound(BBB1, dim=3)
-    DO i1 = 1, ubound(BBB1, dim=1)
-       BBB2(i1, :, i3) =  matmul(S,BBB1(i1, :, i3))
-    END DO
-    END DO
-    IF (debug) THEN
-       flush (out_unit)
-    END IF
-END SUBROUTINE
-
-
-   SUBROUTINE Projection_temp(psi, psi_dt)
-   TYPE(psi_t), intent(in), target                  :: psi_dt
-   TYPE(psi_t), intent(inout), target               :: psi
-   complex(kind= Rkind), pointer                    :: BBB1(:, :, :), BBB2(:, :, :)
-   complex(kind= Rkind), allocatable, target        :: B1(:), B2(:)
-   real(kind= Rkind)                                :: Norm0,norm,E,E0
-   logical, parameter                               :: debug = .true.
-   integer                                          :: ib, ndim
-   Integer, allocatable                             :: Ib1(:), Ib2(:), Ib3(:)
-
-   call Calc_index(Ib1=Ib1, Ib2=Ib2, Ib3=Ib3, Basis=psi%Basis)
-   ndim = size(psi%Basis%tab_basis) - 1
-   call Calc_Norm_OF_psi(psi_dt,Norm0)
-   call Calc_average_energy(psi_dt, E0)
-   psi%CVec(:) = CZERO
-   allocate (B1(Ib1(1)*Ib2(1)*Ib3(1)))
-   allocate (B2(Ib1(1)*Ib2(1)*Ib3(1)))
-
-    B1(:) = CZERO
-    B2(:) = CZERO
-    B1(:) = psi_dt%CVec(:)
-
-    DO ib = 1,ndim
-       BBB1(1:Ib1(ib), 1:Ib2(ib), 1:Ib3(ib)) => B1
-       BBB2(1:Ib1(ib), 1:Ib2(ib), 1:Ib3(ib)) => B2
-       call projection_1D(BBB2, BBB1, psi_dt%Basis%tab_basis(ib))
-       B1(:) = B2(:)
-    END DO
-    psi%CVec(:) = B2(:)
-    
-   call  Calc_average_energy(psi, E)
-     deallocate(B1)
-     deallocate(B2)
-    call Calc_Norm_OF_psi(psi,Norm)
-   ! write(25,*) E0,E
-   !  write(24,*) Norm0,Norm
-    write (out_unit, *) 'Begin Hagedorn projection  E0,Norm0',E0,Norm0
-    write (out_unit, *) 'END Hagedorn projection E,Norm ',E,Norm
-END SUBROUTINE 
-
 subroutine Test_projection_hagedorn(Basis,psi)
   implicit none
 
@@ -605,163 +485,76 @@ subroutine Test_projection_hagedorn(Basis,psi)
   ! End of projection test
 end subroutine test_projection_hagedorn
 
-subroutine test_psi_temp(psi,propa)
-   implicit none
-   TYPE(psi_t), target, intent(inout)  :: psi
-    type(propa_t),intent(in)           :: propa
-    TYPE(Basis_t)                      ::  Basis1,Basis2
-   TYPE(psi_t)                         :: psi2,psi1
-   real(kind= Rkind)                   :: Norm0,norm,E,E0
-   integer                             :: ib
-  
-   call init_Basis1_TO_Basis2(Basis1, psi%Basis)
-   call construct_primitive_basis(Basis1)
-   call init_Basis1_TO_Basis2(Basis2, psi%Basis)
-   call construct_primitive_basis(Basis2)
-   call init_psi(psi2, psi%Basis, cplx=.true., grid=.false.)
-   call init_psi(psi1, Basis1, cplx=.true., grid=.false.)
-   psi2%CVec(:) = CZERO
-   print *, '--------------------------------------------------------'
-
-       do ib = 1,size(psi%CVec)
-         write(out_unit,*) ib,abs(psi%CVec(ib))**2
-       end Do 
-
-       call  Calc_average_energy(psi, E0) 
-       call Hagedorn_temp(psi2, psi,propa)
-       call  Calc_average_energy(psi2, E)
-
-
-       do ib = 1,size(psi%CVec)
-           write(out_unit,*) ib,abs(psi2%CVec(ib))**2
-      end Do 
-       write(out_unit,*)  'E0,E' ,E0,E 
-
-       !call  Hagedorn_inv(psi1, psi2)
-
-        do ib = 1,size(psi%CVec)
-         write(out_unit,*) ib,abs(psi%CVec(ib))**2,abs(psi1%CVec(ib))**2,abs(psi%CVec(ib))**2-abs(psi1%CVec(ib))**2
-       end Do 
-
-    print *, '--------------------------------------------------------'
-
-end subroutine 
-
-
-  SUBROUTINE march_Hagedorn(psi, psi_dt, t, propa)
-  USE psi_m
-  type(propa_t),intent(in)                :: propa
-  type(psi_t),  intent(inout)             :: psi
-  type(psi_t),  intent(inout)             :: psi_dt
-  real(kind=Rkind), intent(in)            :: t
-
-   call  march(psi, psi_dt, t, propa)
-   call Hagedorn_temp(psi, psi_dt,propa)
-
- END SUBROUTINE
-
-
-   SUBROUTINE Hagedorn_temp(psi, psi_dt, propa)
-    USE psi_m
-    IMPLICIT NONE
-  
-    ! Declarations
-    TYPE(psi_t),     INTENT(INOUT) :: psi         ! Wavefunction to project into new basis
-    TYPE(psi_t),     INTENT(INOUT) :: psi_dt      ! Temporary wavefunction from time propagation
-    TYPE(propa_t),   INTENT(IN)    :: propa       ! Propagation parameters
-  
-    COMPLEX(kind=Rkind), ALLOCATABLE :: At(:)     ! A(t) parameters
-    REAL(kind=Rkind),    ALLOCATABLE :: Qt(:), SQt(:), Pt(:)  ! Q(t), sQt(t), and P(t)
-    REAL(kind=Rkind)                  :: Norm0, norm
-    INTEGER                           :: ndim
-  
-    ! Get number of degrees of freedom
-    ndim = SIZE(psi%Basis%tab_basis) - 1
-  
-    ! Allocate arrays for Gaussian parameters
-    ALLOCATE(Qt(ndim), SQt(ndim), Pt(ndim), At(ndim))
-  
-    ! Compute parameters from psi_dt
-    CALL Calc_Basis_parameters_temp(psi_dt, Qt, SQt, At, Pt, propa)
-  
-    ! Reconstruct new non-variational Hagedorn basis using those parameters
-    CALL Construct_Hagedorn_none_Variational_Basis_temp(psi_dt%Basis, Qt, SQt, At, Pt)
-  
-    ! Save norm of the unprojected psi_dt
-    CALL Calc_Norm_OF_psi(psi_dt, Norm0)
-  
-    ! Project psi_dt into the new basis and update psi
-    CALL Projection(psi, psi_dt)
-  
-    ! Optional renormalization if requested
-    IF (propa%renorm) THEN
-       CALL Calc_Norm_OF_psi(psi, norm)
-       psi%CVec(:) = psi%CVec(:) / norm
-    END IF
-  
-    ! Final norm check and output
-    CALL Calc_Norm_OF_psi(psi, norm)
-    WRITE(out_unit,*) ABS(Norm0 - norm), Norm0, norm
-  
-    ! Clean-up
-    DEALLOCATE(Qt, SQt, At, Pt)
-  
-  END SUBROUTINE Hagedorn_temp
-
-
-
- SUBROUTINE Hagedorn_inv(psi0, psi_dt, renorm)
-  USE psi_m
-  IMPLICIT NONE
-
-  TYPE(psi_t), INTENT(INOUT)             :: psi0      ! Wavefunction to be updated
-  TYPE(psi_t), INTENT(IN)                :: psi_dt    ! Reference wavefunction
-  LOGICAL, INTENT(IN)                    :: renorm    ! Whether to renormalize psi0
-
-  ! Basis parameters
-  COMPLEX(KIND=Rkind), ALLOCATABLE       :: A0(:)     ! Complex scaling parameter
-  REAL(KIND=Rkind), ALLOCATABLE          :: Q0(:), SQ0(:), P0(:) ! Gaussian parameters
-
-  ! Norm variables
-  REAL(KIND=Rkind)                       :: Norm0, norm
-  INTEGER                                :: ndim
-
-  !-------------------------------- Initialization --------------------------------
-  ndim = SIZE(psi0%Basis%tab_basis) - 1
-  ALLOCATE(Q0(ndim), SQ0(ndim), P0(ndim), A0(ndim))
-
-  ! Extract basis parameters from psi0
-  CALL Get_Basis_Parameters(psi0%Basis, Q0, SQ0, A0, P0)
-
-  ! Alternative: temporary calculation of parameters (commented)
-  !CALL Calc_Basis_parameters_temp(psi0, Q0, SQ0, A0, P0, propa)
-
-  ! Construct Hagedorn basis for psi_dt using parameters from psi0
-  CALL Construct_Hagedorn_none_Variational_Basis_temp(psi_dt%Basis, Q0, SQ0, A0, P0)
-
-  ! Compute norm of psi_dt before projection
-  CALL Calc_Norm_OF_psi(psi_dt, Norm0)
-
-  ! Project psi_dt onto psi0's basis
-  CALL Projection(psi0, psi_dt)
-
-  !-------------------------------- Optional Renormalization ----------------------
-  IF (renorm) THEN
-     CALL Calc_Norm_OF_psi(psi0, norm)
-     psi0%CVec(:) = psi0%CVec(:) / norm
-  END IF
-
-  !-------------------------------- Final Norm Check ------------------------------
-  CALL Calc_Norm_OF_psi(psi0, norm)
-  WRITE(out_unit,*) ABS(Norm0 - norm), Norm0, norm
-
-  !-------------------------------- Clean Up --------------------------------------
-  DEALLOCATE(Q0, SQ0, A0, P0)
-
-END SUBROUTINE
+ 
+ SUBROUTINE Hagedorn(psi_main, psi_temp, propa, use_psi0_params)
+   !============================================================================
+   ! PURPOSE:
+   !   Update a wavefunction in a Hagedorn basis by constructing a new non-variational
+   !   Hagedorn basis and projecting the temporary wavefunction onto it.
+   !
+   !   - If use_psi0_params = .false., the basis parameters are computed from psi_temp
+   !     (forward propagation, like Hagedorn).
+   !   - If use_psi0_params = .true., the basis parameters are taken from psi_main
+   !     (inverse projection, like Hagedorn_inv).
+   !
+   ! INPUT/OUTPUT:
+   !   psi_main          : main wavefunction to update (INOUT)
+   !   psi_temp          : temporary wavefunction from propagation (INOUT)
+   !   propa             : propagation parameters (IN), contains renorm and calculation options
+   !   use_psi0_params   : logical, TRUE => take parameters from psi_main (inverse)
+   !
+   !============================================================================
+   IMPLICIT NONE
+ 
+   TYPE(psi_t),     INTENT(INOUT) :: psi_main
+   TYPE(psi_t),     INTENT(INOUT) :: psi_temp
+   TYPE(propa_t),   INTENT(IN)    :: propa
+   LOGICAL,         INTENT(IN)    :: use_psi0_params
+ 
+   ! Local Gaussian/Hagedorn parameters
+   COMPLEX(KIND=Rkind), ALLOCATABLE :: At(:)
+   REAL(KIND=Rkind), ALLOCATABLE    :: Qt(:), SQt(:), Pt(:)
+   REAL(KIND=Rkind)                  :: Norm0, norm
+   INTEGER                           :: ndim
+ 
+   !-------------------------------- Initialization --------------------------------
+   ndim = SIZE(psi_main%Basis%tab_basis) - 1
+   ALLOCATE(Qt(ndim), SQt(ndim), Pt(ndim), At(ndim))
+ 
+   !-------------------------------- Compute Parameters --------------------------------
+   IF (.NOT. use_psi0_params) THEN
+      ! Forward propagation: compute from psi_temp
+      CALL Calc_Basis_parameters(psi_temp, Qt, SQt, At, Pt, propa)
+   ELSE
+      ! Inverse projection: copy from psi_main
+      CALL Get_Basis_Parameters(psi_main%Basis, Qt, SQt, At, Pt)
+   END IF
+ 
+   !------------------------ Construct new Hagedorn basis ---------------------------
+   CALL Construct_Hagedorn_none_Variational_Basis(psi_temp%Basis, Qt, SQt, At, Pt)
+ 
+   !--------------------------- Save norm before projection --------------------------
+   CALL Calc_Norm_OF_psi(psi_temp, Norm0)
+ 
+   !-------------------------- Project temporary wavefunction ------------------------
+   CALL Projection(psi_main, psi_temp)
+ 
+   !----------------------------- Optional renormalization ---------------------------
+   IF (propa%renorm) THEN
+      CALL Calc_Norm_OF_psi(psi_main, norm)
+      psi_main%CVec(:) = psi_main%CVec(:) / norm
+   END IF
+ 
+   !----------------------------- Final norm check -----------------------------------
+   CALL Calc_Norm_OF_psi(psi_main, norm)
+   WRITE(out_unit,*) 'Norm diff =', ABS(Norm0 - norm), 'Norm0 =', Norm0, 'Norm =', norm
+ 
+   !----------------------------- Clean-up -------------------------------------------
+   DEALLOCATE(Qt, SQt, At, Pt)
+ 
+ END SUBROUTINE Hagedorn
 
  SUBROUTINE march_Global(psi, psi_dt, t, propa, H)
-  USE psi_m
   IMPLICIT NONE
 
   ! Input/output arguments
@@ -781,9 +574,40 @@ END SUBROUTINE
   real(kind=Rkind) :: Norm0, norm      ! Norms before and after propagation (for conservation check)
   real(kind=Rkind) :: E0, E            ! Energies before and after propagation
   integer          :: ndim             ! Number of degrees of freedom (basis size - 1)
+  LOGICAL, PARAMETER :: debug=.FALSE.
 
   ! Determine number of degrees of freedom from the basis
   ndim = size(psi%Basis%tab_basis) - 1
+
+  IF (debug) THEN
+     WRITE(out_unit,*) 'BEGIN march_Global'
+     WRITE(out_unit,*) 'ndim = ', ndim
+     IF(.NOT. ASSOCIATED(psi%Basis)) THEN
+        WRITE(out_unit,*) 'psi%Basis is not associated in march_Global routine'
+        STOP 'psi%Basis is not associated in march_Global routine'
+     END IF
+     IF(.NOT. ASSOCIATED(psi_dt%Basis)) THEN
+        WRITE(out_unit,*) 'psi_dt%Basis is not associated in march_Global routine'
+        STOP 'psi_dt%Basis is not associated in march_Global routine'
+     END IF
+     IF(.NOT. ALLOCATED(psi%CVec)) THEN
+        WRITE(out_unit,*) 'psi%CVec is not allocated in march_Global routine'
+        STOP 'psi%CVec is not allocated in march_Global routine'
+     ELSE
+        WRITE(out_unit,*) 'psi%CVec is allocated in march_Global routine'
+        WRITE(out_unit,*) 'size(psi%CVec) = ', size(psi%CVec)
+        FLUSH(out_unit)
+     END IF
+     IF(.NOT. ALLOCATED(psi_dt%CVec)) THEN
+        WRITE(out_unit,*) 'psi_dt%CVec is not allocated in march_Global routine'
+        STOP 'psi_dt%CVec is not allocated in march_Global routine'
+     ELSE
+        WRITE(out_unit,*) 'psi_dt%CVec is allocated in march_Global routine'
+        WRITE(out_unit,*) 'size(psi_dt%CVec) = ', size(psi_dt%CVec)
+        FLUSH(out_unit)
+     END IF
+     FLUSH(out_unit)
+  END IF
 
   ! Allocate and initialize Gaussian parameters
   ALLOCATE(Qt(ndim), SQt(ndim), Pt(ndim), At(ndim))
@@ -795,14 +619,14 @@ END SUBROUTINE
   ! If the propagator is Hagedorn-based, perform full Hagedorn propagation
   IF (propa%propa_name == 'hagedorn') THEN
      ! Step 1: Time propagation (temporary psi_dt)
-     CALL march_temp(psi, psi_dt, t, propa, H)
+     CALL march(psi, psi_dt, t, propa, H)
 
      ! Step 2: Compute initial energy and norm (after temporary propagation)
      CALL Calc_Av_E(E0, psi_dt, H)
      CALL Calc_Norm_OF_psi(psi_dt, Norm0)
 
      ! Step 3: Project psi_dt into Hagedorn basis
-     CALL Hagedorn_temp(psi, psi_dt, propa)
+     CALL Hagedorn(psi, psi_dt, propa,use_psi0_params=.FALSE.)
 
      ! Step 4: Reconstruct operator H with new basis
      DEALLOCATE(H%Scal_pot)
@@ -816,46 +640,26 @@ END SUBROUTINE
      ! Step 6: Output energy and norm differences for diagnostics
      WRITE(25,*) t, ABS(E0 - E), E0, E
      WRITE(24,*) t, ABS(Norm0 - norm), Norm0, norm
-
+     FLUSH(out_unit)
   ELSE
      ! Default propagation: simple time step without Hagedorn basis
-     CALL march_temp(psi, psi_dt, t, propa, H)
+     CALL march(psi, psi_dt, t, propa, H)
 
      ! Directly update psi with temporary psi_dt
+     !stop 'Hagedorn basis not implemented'
+     IF(debug) THEN
+     WRITE(out_unit,*) 'size(psi_dt%CVec), size(psi%CVec) =:', size(psi_dt%CVec), size(psi%CVec)
+     WRITE(out_unit,*) 'size(psi_dt%CVec) == size(psi%CVec)=:', size(psi_dt%CVec)==size(psi%CVec)
+     IF(.NOT. size(psi_dt%CVec)==size(psi%CVec)) WRITE(out_unit,*) 'psi_dt%CVec and psi%CVec  In march_Global have different sizes'
+     END IF
+     
+     
      psi%CVec(:) = psi_dt%CVec(:)
+
+     FLUSH(out_unit)
   END IF
 
 END SUBROUTINE march_Global
-
-
- SUBROUTINE Poly_Hermite_modified_funct(Q,Qt,SQt,Bt,Pt,ib,d0)
-     real(kind=Rkind)                               :: Q,Qt,SQt,Pt,Bt
-     integer,intent(in)                             :: ib
-     complex(kind=Rkind) , intent(inout)            :: d0
-     complex(kind=Rkind)                            :: d0W,d1W,d2W
-     real(kind=Rkind)                               :: DQ
-
-       DQ = SQt*(Q-Qt)
-       Pt = Pt/SQt
-       Bt = Bt/(SQt*SQt)
-       
-      call Calc_d0d1d2W(Q,Qt,SQt,Bt,Pt,d0W,d1W,d2W,.false.)
-      d0 = sqrt(SQt)*poly_Hermite(DQ,ib)*exp(-HALF*DQ*DQ)*d0W
-
- End SUBROUTINE
-
- SUBROUTINE Poly_Hermite_modified_funct_temp(Q,Qt,SQt,Bt,Pt,ib,d0)
-    real(kind=Rkind) ,intent(in)                   :: Q,Qt,SQt,Pt,Bt
-    integer,intent(in)                             :: ib
-    complex(kind=Rkind) , intent(inout)            :: d0
-    real(kind=Rkind)                               :: DQ,P
-    complex(kind=Rkind)                            :: At
-
-      DQ = SQt*(Q-Qt)
-      At= complex(ONE,Bt/(SQt*SQt))
-      P = Pt/SQt
-     d0 = sqrt(SQt)*poly_Hermite(DQ,ib)*exp(-HALF*At*DQ*DQ+EYE*P*DQ)
-End SUBROUTINE
 
  SUBROUTINE d0poly_Hermite_exp(Q,ib,d0)
     USE QDUtil_m
