@@ -558,23 +558,24 @@ end subroutine test_projection_hagedorn
   IMPLICIT NONE
 
   ! Input/output arguments
-  type(propa_t), INTENT(IN)     :: propa     ! Propagation parameters
-  type(psi_t),    INTENT(INOUT) :: psi       ! Current wavefunction (updated if needed)
-  type(psi_t),    INTENT(INOUT) :: psi_dt    ! Temporary wavefunction (used for propagation)
-  real(kind=Rkind), INTENT(IN)  :: t         ! Current time
-  type(Op_t),     INTENT(INOUT) :: H         ! Hamiltonian operator (includes potential, kinetic, etc.)
+  TYPE(propa_t), INTENT(IN)     :: propa     ! Propagation parameters
+  TYPE(psi_t),    INTENT(INOUT) :: psi       ! Current wavefunction (updated if needed)
+  TYPE(psi_t),    INTENT(INOUT) :: psi_dt    ! Temporary wavefunction (used for propagation)
+  REAL(kind=Rkind), INTENT(IN)  :: t         ! Current time
+  TYPE(Op_t),     INTENT(INOUT) :: H         ! Hamiltonian operator (includes potential, kinetic, etc.)
 
   ! Local variables
-  complex(kind=Rkind), ALLOCATABLE :: At(:)      ! Complex width parameters for each degree of freedom
-  real(kind=Rkind),    ALLOCATABLE :: Qt(:)      ! Gaussian centers in position
-  real(kind=Rkind),    ALLOCATABLE :: SQt(:)     ! Widths (real part of square root of At)
-  real(kind=Rkind),    ALLOCATABLE :: Pt(:)      ! Gaussian centers in momentum
-  integer, ALLOCATABLE             :: Tab_iq(:, :) ! Index mapping for operator construction
+  COMPLEX(kind=Rkind), ALLOCATABLE :: At(:)      ! Complex width parameters for each degree of freedom
+  REAL(kind=Rkind),    ALLOCATABLE :: Qt(:)      ! Gaussian centers in position
+  REAL(kind=Rkind),    ALLOCATABLE :: SQt(:)     ! Widths (real part of square root of At)
+  REAL(kind=Rkind),    ALLOCATABLE :: Pt(:)      ! Gaussian centers in momentum
+  INTEGER, ALLOCATABLE             :: Tab_iq(:, :) ! Index mapping for operator construction
 
-  real(kind=Rkind) :: Norm0, norm      ! Norms before and after propagation (for conservation check)
-  real(kind=Rkind) :: E0, E            ! Energies before and after propagation
-  integer          :: ndim             ! Number of degrees of freedom (basis size - 1)
+  REAL(kind=Rkind) :: Norm0, norm      ! Norms before and after propagation (for conservation check)
+  REAL(kind=Rkind) :: E0, E            ! Energies before and after propagation
+  INTEGER          :: ndim             ! Number of degrees of freedom (basis size - 1)
   LOGICAL, PARAMETER :: debug=.FALSE.
+  CHARACTER(len=Name_len)                  :: name
 
   ! Determine number of degrees of freedom from the basis
   ndim = size(psi%Basis%tab_basis) - 1
@@ -652,10 +653,14 @@ end subroutine test_projection_hagedorn
      WRITE(out_unit,*) 'size(psi_dt%CVec) == size(psi%CVec)=:', size(psi_dt%CVec)==size(psi%CVec)
      IF(.NOT. size(psi_dt%CVec)==size(psi%CVec)) WRITE(out_unit,*) 'psi_dt%CVec and psi%CVec  In march_Global have different sizes'
      END IF
-     
-     
+      
+     name = propa%propa_name2 
+     CALL string_uppercase_TO_lowercase(name)
+     IF (name=='vp')THEN
+       CALL Set_Op(H, psi_dt%Basis, Tab_Iq,alloc=.FALSE.)
+      CALL init_psi(psi,psi_dt%Basis,cplx=.TRUE.,grid=.FALSE.)
+     END IF 
      psi%CVec(:) = psi_dt%CVec(:)
-
      FLUSH(out_unit)
   END IF
 

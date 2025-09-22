@@ -45,9 +45,9 @@ SUBROUTINE propagation(psif, psi0, propa)
    REAL(kind=Rkind), ALLOCATABLE    :: pop(:)    ! Populations per surface
    INTEGER, ALLOCATABLE             :: Tab_iq(:, :)  ! Basis index mapping
 
-   TYPE(REDUCED_DENSIRY_t)    :: Rd               ! Reduced density matrix (unused for now)
+   !TYPE(REDUCED_DENSIRY_t)    :: Rd               ! Reduced density matrix (unused for now)
     
-   INTEGER :: Ndim, i, nt, nf, nsurf              ! Dimensions, loop indices
+   INTEGER :: Ndim, i, nt, nsurf              ! Dimensions, loop indices
    TYPE(psi_t) :: psi, psi_dt, psi_t0 , Gspsi     ! Wavefunction containers (current, step, and reference)
    character(len=Name_len) :: name
 

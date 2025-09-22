@@ -104,6 +104,11 @@ PROGRAM TD_SCHROD
    !CALL Print_Grids(Basis)
    !CALL Test_NUFFT_Cycle(psi0%CVec,Basis)
 
+   !CALL Test_Calc_M22(Basis)
+   !CALL Verify_M22_2D(Basis)
+   !CALL Test_All_Derivatives(psi0)
+   !CALL Test_Matrices(psi0,H)
+   !CALL Test_Psi_Lambda_Transform(psi0)
    !CALL test_taylor(psi0, psif, propa, H)
    !STOP 'calcul de H|psi> est fait'
 

@@ -191,10 +191,10 @@ module Ana_psi_m
        END IF
        
        Ndim = size(psi0%Basis%tab_basis)
-       call init_psi(psi, psi0%Basis, cplx=.true., grid=.true.)
-       call init_psi(ikpsi, psi0%Basis, cplx=.true., grid=.true.)
-       call init_psi(psi_b, psi0%Basis, cplx=.true., grid=.false.)
-       call init_psi(ikpsi_b, psi0%Basis, cplx=.true., grid=.false.)
+       call init_psi(psi, psi0%Basis, cplx=.TRUE., grid=.TRUE.)
+       call init_psi(ikpsi, psi0%Basis, cplx=.TRUE., grid=.TRUE.)
+       call init_psi(psi_b, psi0%Basis, cplx=.TRUE., grid=.FALSE.)
+       call init_psi(ikpsi_b, psi0%Basis, cplx=.TRUE., grid=.FALSE.)
        Call Calc_index(Ib1=Ib1, Ib2=Ib2, Ib3=Ib3,Iq1=Iq1, Iq2=Iq2,&
         & Iq3=Iq3, Basis=psi0%Basis)
 

@@ -57,7 +57,6 @@ mkdir -p obj EXT_LIB
 # 2. Build dependencies
 cd EXT_LIB
 git clone https://github.com/lauvergn/QuantumModelLib.git
-git clone https://github.com/lauvergn/QDUtilLib.git
 # Follow build instructions in each repository
 ```
 
@@ -204,6 +203,7 @@ Compilation and propagation are handled together using the `default.inp` script.
 
 ```bash
 # Build with a specific basis size (e.g., 10)
+# Go to the test directory ./test and run
 ./default.inp 10
 ```
 

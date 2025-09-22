@@ -7,10 +7,10 @@ module psi_m
 
    TYPE :: psi_t
    
-      type(Basis_t), pointer      :: Basis
-      real(kind= Rkind), allocatable :: RVec(:)
-      complex(kind= Rkind), allocatable :: CVec(:)
-      logical                        :: Grid = .true.
+      type(Basis_t), POINTER           :: Basis
+      REAL(kind= Rkind), ALLOCATABLE    :: RVec(:)
+      COMPLEX(kind= Rkind), ALLOCATABLE :: CVec(:)
+      LOGICAL                            :: Grid = .TRUE.
 
    CONTAINS
 

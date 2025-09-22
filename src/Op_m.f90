@@ -38,8 +38,14 @@ CONTAINS
 
       nullify (Op%Basis)
 
-      IF (allocated(Op%RMat)) THEN
-         deallocate (Op%RMat)
+      IF (ALLOCATED(Op%RMat)) THEN
+         DEALLOCATE (Op%RMat)
+      END IF
+      IF (ALLOCATED(Op%CMat)) THEN
+         DEALLOCATE (Op%CMat)
+      END IF
+      IF (ALLOCATED(Op%Scal_pot)) THEN
+         DEALLOCATE (Op%Scal_pot)
       END IF
 
    END SUBROUTINE dealloc_Op
@@ -410,16 +416,16 @@ SUBROUTINE Set_Op(Op, Basis, Tab_Iq, alloc)
       USE Basis_m
       USE  QDUtil_m
       USE Molec_m
-      TYPE(Basis_t), intent(in), target               :: Basis
-      complex(kind=Rkind), intent(in), target         :: psi_g(:)
-      complex(kind=Rkind), intent(inout), target      :: Kpsi_g(:)
-      complex(kind=Rkind), pointer                    :: psi_ggb(:, :, :)
-      complex(kind=Rkind), pointer                    :: d2gg(:, :)
-      complex(kind=Rkind), pointer                    :: Kpsi_ggb(:, :, :)
-      real(kind=Rkind), allocatable                   :: GGdef(:, :)
-      logical, parameter                              :: debug = .true.
-      integer                                         :: iq, i1, i3, inb, ndim
-      integer, allocatable                            :: Iq1, Iq2, Iq3
+      TYPE(Basis_t), INTENT(IN), TARGET               :: Basis
+      COMPLEX(KIND=Rkind), INTENT(IN), TARGET         :: psi_g(:)
+      COMPLEX(KIND=Rkind), INTENT(INOUT), TARGET      :: Kpsi_g(:)
+      COMPLEX(KIND=Rkind), POINTER                    :: psi_ggb(:, :, :)
+      COMPLEX(KIND=Rkind), POINTER                    :: d2gg(:, :)
+      COMPLEX(KIND=Rkind), POINTER                    :: Kpsi_ggb(:, :, :)
+      REAL(KIND=Rkind), ALLOCATABLE                   :: GGdef(:,:)
+      LOGICAL, PARAMETER                              :: debug = .TRUE.
+      INTEGER                                         :: iq, i1, i3, inb, ndim
+      INTEGER                                         :: Iq1, Iq2, Iq3
 
       IF (debug) THEN
          !write(out_unit,*) 'BEGINNING Kpsi'
@@ -458,12 +464,10 @@ SUBROUTINE Set_Op(Op, Basis, Tab_Iq, alloc)
          DO i3 = 1, ubound(psi_ggb, dim=3)
             DO i1 = 1, ubound(psi_ggb, dim=1)
                KPsi_ggb(i1, :, i3) = KPsi_ggb(i1, :, i3) - HALF*GGdef(inb, inb)*matmul(d2gg, psi_ggb(i1, :, i3))
-               !Kpsi_ggb(i1, :, i3) = Kpsi_ggb(i1, :, i3) - HALF*matmul(d2gg, psi_ggb(i1, :, i3))
             END DO
          END DO
 
       END DO
-      deallocate (Iq1, Iq2, Iq3)
       IF (debug) THEN
          !        write(out_unit,*) 'END KPsi_nD'
          flush (out_unit)
@@ -842,8 +846,7 @@ SUBROUTINE test_openmp_op(Basis)
    TYPE(Basis_t), intent(in), target             :: Basis
    real(kind=Rkind), allocatable                 :: V(:, :, :)
    integer, allocatable                          :: Tab_Iq(:, :)
-   real(kind=Rkind)                              :: t1,t2,tps, tpsopenmp
-   integer                                        :: iq, nq
+   integer                                        :: nq
 
   nq = Basis%nq
   print*,"nq=",nq

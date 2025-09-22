@@ -16,7 +16,7 @@ nb=$1
 
 # Compute nq as nb + 10
 nq=$((nb + 5))
-dt=0.1
+dt=0.01
 
 # Print nb and nq for logging
 echo "nb = $nb, nq = $nq"
@@ -53,7 +53,7 @@ $EXE << ** > resultat_std.lua
     eps=1.e-20 max_iter=50           ! Precision and max iterations
     E_min=0.0 E_max=5.0                    ! Energy range for Chebyshev expansion
     propa_name='non_hagedorn'           ! Primary propagator
-    propa_name2='cn_gmres'                 ! Optional secondary propagator
+    propa_name2='vp'                 ! Optional secondary propagator
     Beta=t P=t renorm= t                ! propagation options
 /
 **

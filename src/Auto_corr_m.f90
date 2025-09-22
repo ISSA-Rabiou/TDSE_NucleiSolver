@@ -6,7 +6,7 @@ module Auto_corr_m
    Use sub_propa_m
 
    implicit none
-   public :: Calc_Auto_corr, Calc_fft_Auto_corr,test_write_cplx,eval_pics
+   public :: Calc_Auto_corr,test_write_cplx,eval_pics
 
 contains
 
@@ -55,7 +55,6 @@ contains
    TYPE(psi_t)       :: psi, psi_t0
    TYPE(Basis_t)     :: Basis0, Basis_dt
    real(Rkind)       :: X, Y
-   integer           :: ib
    logical           :: ldebug
    
    !=====================
@@ -150,33 +149,6 @@ contains
    
    END SUBROUTINE Calc_Auto_corr
 
-   SUBROUTINE Calc_fft_Auto_corr(autocor_function, time, fft_autocor_function, delta_t, N)
-      USE QDUtil_m
-      COMPLEX(KIND=Rkind), INTENT(IN), allocatable, DIMENSION(:)        :: autocor_function(:)
-      COMPLEX(KIND=Rkind), INTENT(INOUT), ALLOCATABLE                   :: fft_autocor_function(:)
-      REAL(KIND=Rkind), INTENT(IN), DIMENSION(:)                        :: time
-      REAL(KIND=Rkind), ALLOCATABLE, DIMENSION(:)                       :: w
-      INTEGER, intent(in)                                               :: N
-      REAL(KIND=Rkind)                                                  :: delta_t
-      REAL(KIND=Rkind)                                                  :: wm, wmax, dw
-      INTEGER                                                           :: Iw, nw, I
-      OPEN (UNIT=100, FILE="fft_autocor_function.dat")
-      fft_autocor_function(:) = CZERO
-      wm = -0.001_Rkind; wmax = 5._Rkind; dw = 0.005_Rkind
-      nw = int((wmax - wm)/dw)
-      !allocate( fft_autocor_function(0:nw))
-      ALLOCATE (w(0:nw - 1))
-      DO Iw = 0, nw - 1
-         w(Iw) = wm + float(Iw)*dw
-         fft_autocor_function(Iw) = ZERO
-         DO I = 1, N
-            fft_autocor_function(Iw) = fft_autocor_function(Iw) + autocor_function(Iw)*EXP(EYE*w(Iw)*time(I))*delta_t
-         END DO !itime
-         WRITE (100, *) w(Iw), ABS(fft_autocor_function(Iw))
-      END DO !omega
-   END SUBROUTINE
-
-
 
    SUBROUTINE test_write(psi,ib)
 
@@ -184,7 +156,6 @@ contains
 
    TYPE(psi_t), intent(in)                    :: psi
    integer,intent(in)                          :: ib
-  integer                                     :: i
 
   !do i =1,size(psi%CVec)
 
@@ -214,7 +185,7 @@ contains
       integer,intent(in)                          :: ib
       real(kind=Rkind) ,intent(in)                :: t
       real(kind=Rkind)                            :: norm,n0
-      integer                                     :: i,nb
+      integer                                     :: i
        
       norm = 0._Rkind
       call Calc_Norm_OF_Psi(psi,n0)

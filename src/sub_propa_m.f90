@@ -78,34 +78,34 @@ CONTAINS
       CHARACTER(len=Name_len)                  :: name
 
       name = propa%propa_name2 
-      call string_uppercase_TO_lowercase(name)
-      select case (name)
-      case ('rk1') 
+      CALL string_uppercase_TO_lowercase(name)
+      SELECT CASE (name)
+      CASE ('rk1') 
         CALL march_RK1(psi, psi_dt, t, propa, H)
-      case ('rk2') 
+      CASE ('rk2') 
         CALL march_RK2(psi, psi_dt, t, propa, H)
-      case ('rk3') 
+      CASE ('rk3') 
         CALL march_RK3(psi, psi_dt, t, propa, H)
-      case ('rk4') 
+      CASE ('rk4') 
         CALL march_RK4(psi, psi_dt, t, propa, H)
-      case ('taylor')
+      CASE ('taylor')
          CALL march_taylor(psi, psi_dt, t, propa, H)
-      case ('sil') 
+      CASE ('sil') 
         CALL march_SIL(psi, psi_dt, t, propa,H)
-      case ('split')
+      CASE ('split')
         CALL march_SPLIT(psi, psi_dt, t, propa, H)
-      case ('cn')
+      CASE ('cn')
         CALL march_CN(psi, psi_dt, t, propa, H)
-      case ('cn_gmres')
-         write (out_unit, *) 'cn_gmres is not implemented'
-         flush(out_unit)
-        !CALL march_CN_With_GMRES(psi, psi_dt, t, propa, H)
-      case ('cheby')
+      CASE ('cheby')
         CALL march_Chebychev(psi, psi_dt, t, propa, H)
-      case default
-         write (out_unit, *) 'March name is not in the list'
-         flush(out_unit)
-      end select      
+      CASE ('vp')
+         CALL march_VP(psi, psi_dt, t, propa, H)
+         !CALL march_VP_RK4(psi, psi_dt, t, propa, H)
+         !CALL march_VPTMP(psi, psi_dt, t, propa, H)
+      CASE DEFAULT
+         WRITE(out_unit, *) 'March name is not in the list'
+         FLUSH(out_unit)
+      END SELECT      
    END SUBROUTINE
 
 
@@ -207,13 +207,12 @@ CONTAINS
       REAL(KIND=Rkind)                 :: alpha
       REAL(KIND=Rkind)                 :: Norm, Norm0
       INTEGER                          :: kk
-      LOGICAL                          :: debug
+      LOGICAL, PARAMETER               :: debug = .FALSE.
    
       ! initialize variables --------------------------------------------------
       CALL init_psi(Hpsi, psi%basis, cplx=.true., grid=.FALSE.)
       CALL init_psi(psi0, psi%basis, cplx=.true., grid=.FALSE.)
    
-      debug = .true.
       alpha = TEN**10
       psi_dt%CVec = psi%CVec
       psi0%CVec = psi%CVec
@@ -229,7 +228,7 @@ CONTAINS
          psi0%CVec(:) = Hpsi%CVec(:)*(propa%delta_t/kk)
          psi_dt%CVec(:) = psi_dt%CVec(:) + psi0%CVec(:)
          CALL Calc_Norm_OF_Psi(psi0, Norm)
-         WRITE (out_unit, *) 'sqrt(<Hpsi|Hpsi>) = ', kk, Norm
+         IF (debug) WRITE (out_unit, *) 'sqrt(<Hpsi|Hpsi>) = ', kk, Norm
     
          ! check conditions ------------------------------------------------------
          IF (Norm >= alpha) THEN
@@ -607,6 +606,495 @@ SUBROUTINE march_SPLIT(psi, psi_dt, t, propa, H)
  
  END SUBROUTINE march_SPLIT
 
+
+ !--------------------------------------------------------------
+! march_VP
+! Description:
+!   - Time propagation of the variational parameters Λ
+!     using the implicit finite-difference scheme:
+!
+!       i M Λ̇ = F   →   Λ(t+dt) = Λ(t) - i dt (M^(-1)) F
+!
+! Inputs:
+!   psi   : Current wavefunction structure
+!   propa : Propagator parameters (contains delta_t, etc.)
+!   H     : Hamiltonian operator
+!   t     : Current time
+!
+! Outputs:
+!   psi_dt : Updated wavefunction after one step
+!--------------------------------------------------------------
+SUBROUTINE march_VP(psi, psi_dt, t, propa, H)
+   USE QDUtil_m
+   IMPLICIT NONE
+   TYPE(psi_t),    INTENT(IN)    :: psi
+   TYPE(psi_t),    INTENT(INOUT) :: psi_dt
+   TYPE(propa_t),  INTENT(IN)    :: propa
+   TYPE(Op_t),     INTENT(IN)    :: H
+   REAL(KIND=Rkind), INTENT(IN)  :: t
+ 
+   ! local variables
+   COMPLEX(KIND=Rkind), ALLOCATABLE   :: Lambda(:), Lambda_new(:)
+   TYPE(psi_t)                        :: tmp
+   COMPLEX(KIND=Rkind), ALLOCATABLE   :: M(:,:), F(:)
+   REAL(KIND=Rkind)                   :: Norm0, Norm
+   INTEGER :: info, n
+ 
+   LOGICAL, PARAMETER                 :: debug = .TRUE.
+ 
+
+   CALL init_psi(tmp, psi%Basis, cplx=.TRUE., grid=.TRUE.)
+   tmp%CVec = psi%CVec
+   !------------------------------------------------------------
+   ! Step 1. Convert psi -> Lambda
+   !------------------------------------------------------------
+   CALL Psi_Lambda_Transform(tmp, Lambda, .TRUE.)
+   n = SIZE(Lambda)
+   CALL Calc_Norm_OF_Psi(psi, Norm0)
+   !------------------------------------------------------------
+   ! Step 2. Build M and F at time t
+   !------------------------------------------------------------
+   CALL Calc_M_nD(psi=psi, M_nD=M)   ! generalized metric matrix
+   CALL Calc_F_nD(psi=psi, H=H, F_nD=F)! force-like vector
+ 
+   !------------------------------------------------------------
+   ! Step 3. Solve ΔΛ = -i dt M^(-1) F
+   !------------------------------------------------------------
+   ALLOCATE(Lambda_new(n))
+   Lambda_new = Lambda
+ 
+   M = inv_OF_Mat(M,inv_type=0,epsi=1.d-20)   ! M = (M)^(-1)
+ 
+   ! Update Lambda
+   Lambda_new = Lambda -  EYE* propa%delta_t * MATMUL(M,F)
+ 
+   !------------------------------------------------------------
+   ! Step 4. Transform back: Lambda -> psi_dt
+   !------------------------------------------------------------
+   CALL Psi_Lambda_Transform(psi_dt, Lambda_new, .FALSE.)
+ 
+   !------------------------------------------------------------
+   ! Debug info
+   !------------------------------------------------------------
+   IF (debug) THEN
+      WRITE(out_unit,*) "BEGIN march_VP at t=", t, " dt=", propa%delta_t
+      CALL Calc_Norm_OF_Psi(psi_dt, Norm)
+      WRITE(out_unit, *) '<psi_dt|psi_dt> = ', Norm, ' |ΔNorm| = ', abs(Norm0 - Norm)
+      WRITE(out_unit,*) "END march_VP"
+      FLUSH(out_unit)
+   END IF
+   !------------------------------------------------------------
+   ! Clean up
+   !------------------------------------------------------------
+   CALL dealloc_psi(tmp)
+   DEALLOCATE(Lambda, Lambda_new, M, F)
+   CALL dealloc_psi(tmp)
+ 
+ END SUBROUTINE march_VP
+
+
+ !--------------------------------------------------------------
+! march_VP_RK4
+! Description:
+!   - Time propagation of the variational parameters Λ
+!     using the Runge-Kutta 4th order method:
+!
+!       i M Λ̇ = F   →   Λ̇ = -i M^(-1) F
+!
+! Inputs:
+!   psi   : Current wavefunction structure
+!   propa : Propagator parameters (contains delta_t, etc.)
+!   H     : Hamiltonian operator
+!   t     : Current time
+!
+! Outputs:
+!   psi_dt : Updated wavefunction after one step
+!--------------------------------------------------------------
+SUBROUTINE march_VP_RK4(psi, psi_dt, t, propa, H)
+   USE QDUtil_m
+   IMPLICIT NONE
+   TYPE(psi_t),    INTENT(IN)    :: psi
+   TYPE(psi_t),    INTENT(INOUT) :: psi_dt
+   TYPE(propa_t),  INTENT(IN)    :: propa
+   TYPE(Op_t),     INTENT(IN)    :: H
+   REAL(KIND=Rkind), INTENT(IN)  :: t
+ 
+   ! local variables
+   COMPLEX(KIND=Rkind), ALLOCATABLE :: Lambda(:), Lambda_new(:)
+   COMPLEX(KIND=Rkind), ALLOCATABLE :: k1(:), k2(:), k3(:), k4(:)
+   COMPLEX(KIND=Rkind), ALLOCATABLE :: Lambda_temp(:)
+   TYPE(psi_t)                      :: tmp_psi
+   TYPE(Op_t)                       :: tmp_op
+   COMPLEX(KIND=Rkind), ALLOCATABLE :: M(:,:), F(:)
+   REAL(KIND=Rkind)                 :: Norm0, Norm, half_dt
+   INTEGER, ALLOCATABLE             :: Tab_Iq(:,:)
+   INTEGER :: nC,i
+   REAL(KIND=Rkind)                 :: scale_factor
+ 
+   LOGICAL, PARAMETER :: debug = .TRUE.
+ 
+   half_dt = propa%delta_t * HALF
+ 
+   !------------------------------------------------------------
+   ! Step 1. Convert psi -> Lambda
+   !------------------------------------------------------------
+   CALL init_psi(tmp_psi, psi%Basis, cplx=.TRUE., grid=.FALSE.)
+   CALL Set_Op(tmp_op, psi%Basis, Tab_Iq,alloc=.FALSE.)
+   tmp_psi%CVec = psi%CVec
+   CALL Psi_Lambda_Transform(tmp_psi, Lambda, .TRUE.)
+   nC = SIZE(Lambda)
+   IF(debug) THEN
+      CALL Calc_Norm_OF_Psi(psi, Norm0)
+      DO i = 1, nC
+         WRITE(out_unit, *) i, Lambda(i)
+      END DO
+   END IF
+   ! Allocate arrays for RK4
+   ALLOCATE(Lambda_new(nC), k1(nC), k2(nC), k3(nC), k4(nC))
+   ALLOCATE(Lambda_temp(nC))
+ 
+   !------------------------------------------------------------
+   ! Step 2. Calculate k1 = f(t, Lambda)
+   !------------------------------------------------------------
+   CALL Calc_M_nD(psi=psi, M_nD=M)
+   CALL Calc_F_nD(psi=psi, H=tmp_op, F_nD=F)
+   scale_factor = ONE / MAX(MAXVAL(ABS(M)), MAXVAL(ABS(F)), 1.d-20)
+   
+   ! Solve M * k1 = F → k1 = M^(-1) F
+   k1 = -EYE * scale_factor * MATMUL(inv_OF_Mat(M,inv_type=0,epsi=1.d-20) , F)  ! f(t, Lambda) = -i M^(-1) F
+ 
+   !------------------------------------------------------------
+   ! Step 3. Calculate k2 = f(t + dt/2, Lambda + dt/2 * k1)
+   !------------------------------------------------------------
+   Lambda_temp = Lambda + half_dt * k1
+   
+   ! Create temporary wavefunction for intermediate step
+   CALL init_psi(tmp_psi, psi%Basis, cplx=.TRUE., grid=.FALSE.)
+   CALL Psi_Lambda_Transform(tmp_psi, Lambda_temp, .FALSE.)
+   
+   CALL Set_Op(tmp_op, tmp_psi%Basis, Tab_Iq,alloc=.FALSE.)
+   CALL Calc_M_nD(psi=tmp_psi, M_nD=M)
+   CALL Calc_F_nD(psi=tmp_psi, H=tmp_op, F_nD=F)
+
+   ! Solve M * k2 = F → k2 = M^(-1) F
+   k2 = -EYE * MATMUL(inv_OF_Mat(M,inv_type=0,epsi=1.d-20) , F)  ! f(t, Lambda) = -i M^(-1) F
+ 
+   !------------------------------------------------------------
+   ! Step 4. Calculate k3 = f(t + dt/2, Lambda + dt/2 * k2)
+   !------------------------------------------------------------
+   Lambda_temp = Lambda + half_dt * k2
+   
+   CALL Psi_Lambda_Transform(tmp_psi, Lambda_temp, .FALSE.)
+   
+   CALL Set_Op(tmp_op, tmp_psi%Basis, Tab_Iq,alloc=.FALSE.)
+   CALL Calc_M_nD(psi=tmp_psi, M_nD=M)
+   CALL Calc_F_nD(psi=tmp_psi, H=tmp_op, F_nD=F)
+   
+   ! Solve M * k3 = F → k3 = M^(-1) F
+   k3 = -EYE * MATMUL(inv_OF_Mat(M,inv_type=0,epsi=1.d-20) , F) ! f(t, Lambda) = -i M^(-1) F
+ 
+   !------------------------------------------------------------
+   ! Step 5. Calculate k4 = f(t + dt, Lambda + dt * k3)
+   !------------------------------------------------------------
+   Lambda_temp = Lambda + propa%delta_t * k3
+   
+   CALL Psi_Lambda_Transform(tmp_psi, Lambda_temp, .FALSE.)
+   
+   CALL Set_Op(tmp_op, tmp_psi%Basis, Tab_Iq,alloc=.FALSE.)
+   CALL Calc_M_nD(psi=tmp_psi, M_nD=M)
+   CALL Calc_F_nD(psi=tmp_psi, H=tmp_op, F_nD=F)
+   
+   ! Solve M * k4 = F → k4 = M^(-1) F
+   k4 = -EYE *MATMUL(inv_OF_Mat(M,inv_type=0,epsi=1.d-20) , F)  ! f(t, Lambda) = -i M^(-1) F
+ 
+   !------------------------------------------------------------
+   ! Step 6. Combine all slopes for final update
+   !------------------------------------------------------------
+   Lambda_new = Lambda + propa%delta_t * SIXTH*(k1 + TWO*k2 + TWO*k3 + k4)
+ 
+   !------------------------------------------------------------
+   ! Step 7. Transform back: Lambda_new -> psi_dt
+   !------------------------------------------------------------
+   CALL Psi_Lambda_Transform(psi_dt, Lambda_new, .FALSE.)
+ 
+   !------------------------------------------------------------
+   ! Debug info
+   !------------------------------------------------------------
+   IF (debug) THEN
+
+      CALL Write_Vec(psi_dt%CVec, out_unit, 1,info='psi_dt')
+      WRITE(out_unit,*) "BEGIN march_VP_RK4 at t=", t, " dt=", propa%delta_t
+      CALL Calc_Norm_OF_Psi(psi_dt, Norm)
+      WRITE(out_unit, *) '<psi_dt|psi_dt> = ', Norm, ' |ΔNorm| = ', abs(Norm0 - Norm)
+      WRITE(out_unit,*) "END march_VP_RK4"
+      FLUSH(out_unit)
+   END IF
+   !------------------------------------------------------------
+   ! Clean up
+   !------------------------------------------------------------
+   CALL dealloc_psi(tmp_psi)
+   CALL dealloc_op(tmp_op) 
+   DEALLOCATE(Lambda, Lambda_new, k1, k2, k3, k4, Lambda_temp, M, F)
+ 
+ END SUBROUTINE march_VP_RK4
+
+
+
+!=======================================================================
+! SUBROUTINE: march_VPTMP
+!
+! PURPOSE:
+!   Time propagation of the wavefunction ψ(t) using the implicit
+!   finite-difference scheme in the Parametric Variational Dynamics
+!   with Trajectories (PVDT).
+!
+!   Governing equation:
+!       i M dΛ/dt = F,
+!   where the block structure of M allows for efficient solution
+!   via the Schur complement:
+!
+!       S = M_CC - M_Cλ M_λλ^{-1} M_λC
+!
+!   Algorithm:
+!     1. Build matrices (S, M_Cλ, M_λλ) and forces (F_C, F_λ)
+!     2. Invert M_λλ with inv_OF_Mat
+!     3. Solve reduced system S ΔΛ_C = F_C - M_Cλ M_λλ^{-1} F_λ
+!     4. Back-substitute to recover ΔΛ_λ
+!     5. Update ψ(t) → ψ(t+Δt) using (ΔΛ_C, ΔΛ_λ)
+!
+! INPUT:
+!   psi     : Current wavefunction object
+!   psi_dt  : Updated wavefunction object (output)
+!   t       : Current time
+!   propa   : Propagation parameters (contains time step Δt, etc.)
+!   H       : Hamiltonian operator
+!
+! OUTPUT:
+!   psi_dt  : Updated wavefunction after one propagation step
+!
+! DEPENDENCIES:
+!   - Calc_S_MClambda_MLambdaLambda: builds S, M_Cλ, M_λλ
+!   - Calc_F_nD: builds F_C and F_λ
+!   - inv_OF_Mat: inverts a square matrix with stabilization
+!
+!=======================================================================
+
+ SUBROUTINE march_VPTMP(psi, psi_dt, t, propa, H)
+   USE QDUtil_m
+   IMPLICIT NONE
+
+   !--------------------------------------------------------------------
+   ! Arguments
+   !--------------------------------------------------------------------
+   TYPE(psi_t),    INTENT(IN)    :: psi
+   TYPE(psi_t),    INTENT(INOUT) :: psi_dt
+   TYPE(propa_t),  INTENT(IN)    :: propa
+   TYPE(Op_t),     INTENT(IN)    :: H
+   REAL(KIND=Rkind), INTENT(IN)  :: t
+
+   !--------------------------------------------------------------------
+   ! Local variables
+   !--------------------------------------------------------------------
+   COMPLEX(KIND=Rkind), ALLOCATABLE :: FC(:), FL(:)
+   COMPLEX(KIND=Rkind), ALLOCATABLE :: M_CC(:,:), M_CL(:,:), M_LL(:,:)
+   COMPLEX(KIND=Rkind), ALLOCATABLE :: D_L(:), D_C(:)
+   COMPLEX(KIND=Rkind), ALLOCATABLE :: Schur_M(:,:), temp_M(:,:), temp_V(:)
+   REAL(KIND=Rkind)                 :: Norm0, Norm
+   INTEGER                          :: nC, nL, i, j, alloc_stat
+   LOGICAL, PARAMETER               :: debug = .TRUE.
+   CHARACTER(LEN=:), ALLOCATABLE    :: error_msg
+
+   !--------------------------------------------------------------------
+   ! 0. Initial norm of ψ(t)
+   !--------------------------------------------------------------------
+   CALL Calc_Norm_OF_Psi(psi, Norm0)
+   WRITE(out_unit,*) 'Norm of initial psi in March_VPTMP: ', Norm0
+
+   !--------------------------------------------------------------------
+   ! 1. Build matrices and force vectors
+   !--------------------------------------------------------------------
+   CALL Calc_S_MClambda_MLambdaLambda(psi, M_CC, M_CL, M_LL)
+   CALL Calc_F_nD(psi=psi, H=H, FC_nD=FC, F_L=FL)
+
+   nC = SIZE(FC)
+   nL = SIZE(FL)
+
+   ! Vérification des dimensions
+   IF (SIZE(M_CC,1) /= nC .OR. SIZE(M_CC,2) /= nC .OR. &
+       SIZE(M_CL,1) /= nC .OR. SIZE(M_CL,2) /= nL .OR. &
+       SIZE(M_LL,1) /= nL .OR. SIZE(M_LL,2) /= nL) THEN
+      WRITE(out_unit,*) 'ERROR: Dimension mismatch in march_VPTMP'
+      STOP
+   END IF
+
+   !--------------------------------------------------------------------
+   ! 2. Invert M_λλ with error handling
+   !--------------------------------------------------------------------
+   ALLOCATE(temp_M(nL,nL), stat=alloc_stat)
+   IF (alloc_stat /= 0) THEN
+      error_msg = 'Allocation failed for temp_M in march_VPTMP'
+      WRITE(out_unit,*) error_msg
+      STOP
+   END IF
+   temp_M = M_LL
+   M_LL=inv_OF_Mat(temp_M, inv_type=0, epsi=1.d-20)
+   DEALLOCATE(temp_M, stat=alloc_stat)
+   IF (alloc_stat /= 0) THEN
+      WRITE(out_unit,*) 'Warning: Deallocation failed for temp_M'
+   END IF
+
+   !--------------------------------------------------------------------
+   ! 3. Compute Schur Matrix with safe operations
+   !--------------------------------------------------------------------
+   ALLOCATE(Schur_M(nC,nC), stat=alloc_stat)
+   IF (alloc_stat /= 0) THEN
+      error_msg = 'Allocation failed for Schur_M in march_VPTMP'
+      WRITE(out_unit,*) error_msg
+      STOP
+   END IF
+   
+   ALLOCATE(temp_M(nC,nL), stat=alloc_stat)
+   IF (alloc_stat /= 0) THEN
+      error_msg = 'Allocation failed for temp_M in march_VPTMP'
+      WRITE(out_unit,*) error_msg
+      STOP
+   END IF
+   
+   ! M_CL * M_LL
+   temp_M = MATMUL(M_CL, M_LL)
+   
+   ! M_CL * M_LL * TRANSPOSE(M_CL)
+   Schur_M = MATMUL(temp_M, TRANSPOSE(M_CL))
+   
+   ! Schur complement: M_CC - M_CL * M_LL^{-1} * M_CL^T
+   Schur_M = M_CC - Schur_M
+   
+   DEALLOCATE(temp_M, stat=alloc_stat)
+   IF (alloc_stat /= 0) THEN
+      WRITE(out_unit,*) 'Warning: Deallocation failed for temp_M'
+   END IF
+
+   !--------------------------------------------------------------------
+   ! 4. Solve reduced system with Schur complement
+   !--------------------------------------------------------------------
+   ALLOCATE(D_C(nC), stat=alloc_stat)
+   IF (alloc_stat /= 0) THEN
+      error_msg = 'Allocation failed for D_C in march_VPTMP'
+      WRITE(out_unit,*) error_msg
+      STOP
+   END IF
+   
+   ALLOCATE(temp_V(nL), stat=alloc_stat)
+   IF (alloc_stat /= 0) THEN
+      error_msg = 'Allocation failed for temp_V in march_VPTMP'
+      WRITE(out_unit,*) error_msg
+      STOP
+   END IF
+   
+   ! temp_V = M_LL * FL
+   temp_V = MATMUL(M_LL, FL)
+   
+   ! D_C = FC - M_CL * temp_V
+   D_C = FC - MATMUL(M_CL, temp_V)
+   
+   ! Invert Schur matrix
+   ALLOCATE(temp_M(nC,nC), stat=alloc_stat)
+   IF (alloc_stat /= 0) THEN
+      error_msg = 'Allocation failed for temp_M in Schur inversion'
+      WRITE(out_unit,*) error_msg
+      STOP
+   END IF
+   
+   Schur_M = inv_OF_Mat(temp_M, inv_type=0, epsi=1.d-20)
+   DEALLOCATE(temp_M, stat=alloc_stat)
+   IF (alloc_stat /= 0) THEN
+      WRITE(out_unit,*) 'Warning: Deallocation failed for temp_M'
+   END IF
+   
+   ! D_C = Schur_M^{-1} * D_C
+   D_C = MATMUL(Schur_M, D_C)
+
+   !--------------------------------------------------------------------
+   ! 5. Compute D_L
+   !--------------------------------------------------------------------
+   ALLOCATE(D_L(nL), stat=alloc_stat)
+   IF (alloc_stat /= 0) THEN
+      error_msg = 'Allocation failed for D_L in march_VPTMP'
+      WRITE(out_unit,*) error_msg
+      STOP
+   END IF
+   
+   ! D_L = FL - M_CL^T * D_C
+   D_L = FL - MATMUL(TRANSPOSE(M_CL), D_C)
+   
+   ! D_L = M_LL * D_L
+   D_L = MATMUL(M_LL, D_L)
+
+   DEALLOCATE(temp_V, stat=alloc_stat)
+   IF (alloc_stat /= 0) THEN
+      WRITE(out_unit,*) 'Warning: Deallocation failed for temp_V'
+   END IF
+
+   !--------------------------------------------------------------------
+   ! 6. Update wavefunction
+   !--------------------------------------------------------------------
+   CALL Update_Psi_From_DeltaLambda(psi, psi_dt, D_C, D_L, propa%delta_t)
+
+   !--------------------------------------------------------------------
+   ! 7. Debug output
+   !--------------------------------------------------------------------
+   IF (debug) THEN
+      WRITE(out_unit,*) "============================================="
+      WRITE(out_unit,*) "BEGIN march_VP at t=", t, " dt=", propa%delta_t
+      CALL Calc_Norm_OF_Psi(psi_dt, Norm)
+      WRITE(out_unit, *) "<psi_dt|psi_dt> = ", Norm, " |ΔNorm| = ", ABS(Norm0 - Norm)
+      WRITE(out_unit,*) "END march_VP"
+      WRITE(out_unit,*) "============================================="
+      FLUSH(out_unit)
+   END IF
+
+   !--------------------------------------------------------------------
+   ! 8. Cleanup avec vérifications complètes
+   !--------------------------------------------------------------------
+   CALL safe_deallocate_C1D(D_C, 'D_C')
+   CALL safe_deallocate_C1D(D_L, 'D_L')
+   CALL safe_deallocate_C1D(FC, 'FC')
+   CALL safe_deallocate_C1D(FL, 'FL')
+   CALL safe_deallocate_C2D(Schur_M, 'Schur_M')
+   CALL safe_deallocate_C2D(M_CC, 'M_CC')
+   CALL safe_deallocate_C2D(M_CL, 'M_CL')
+   CALL safe_deallocate_C2D(M_LL, 'M_LL')
+
+CONTAINS
+
+   ! Sous-routines internes pour la désallocation sécurisée
+   SUBROUTINE safe_deallocate_C1D(array, array_name)
+      COMPLEX(KIND=Rkind), ALLOCATABLE, INTENT(INOUT) :: array(:)
+      CHARACTER(LEN=*), INTENT(IN) :: array_name
+      INTEGER :: stat
+      
+      IF (ALLOCATED(array)) THEN
+         DEALLOCATE(array, stat=stat)
+         IF (stat /= 0) THEN
+            WRITE(out_unit,*) 'Warning: Failed to deallocate ', TRIM(array_name)
+         END IF
+      END IF
+   END SUBROUTINE safe_deallocate_C1D
+
+   SUBROUTINE safe_deallocate_C2D(array, array_name)
+      COMPLEX(KIND=Rkind), ALLOCATABLE, INTENT(INOUT) :: array(:,:)
+      CHARACTER(LEN=*), INTENT(IN) :: array_name
+      INTEGER :: stat
+      
+      IF (ALLOCATED(array)) THEN
+         DEALLOCATE(array, stat=stat)
+         IF (stat /= 0) THEN
+            WRITE(out_unit,*) 'Warning: Failed to deallocate ', TRIM(array_name)
+         END IF
+      END IF
+   END SUBROUTINE safe_deallocate_C2D
+
+END SUBROUTINE march_VPTMP
 
 !----------------------------------------------------------------------------------
 !> SUBROUTINE: march_CN
@@ -1918,7 +2406,7 @@ END SUBROUTINE creat_file_unit
       CHARACTER(*),        INTENT(in) :: op
       REAL(KIND=Rkind),    INTENT(in) :: t
 
-      INTEGER :: i, n
+      INTEGER ::n
       n = SIZE(z)
 
       SELECT CASE (TRIM(ADJUSTL(op)))
