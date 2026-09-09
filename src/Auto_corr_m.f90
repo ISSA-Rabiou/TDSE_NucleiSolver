@@ -89,7 +89,7 @@ contains
    CALL Hagedorn(psi, psi_t0, propa, use_psi0_params=.TRUE.)
    
    !--- Compute autocorrelation coefficient
-   corre_coeff     = DOT_PRODUCT(psi0%CVec, psi%CVec)
+   corre_coeff     = Dot_Psi(psi0,psi)
    X               = REAL(corre_coeff, kind=Rkind)
    Y               = AIMAG(corre_coeff)
    arg_corre_coeff = ATAN2(Y, X)
@@ -120,7 +120,7 @@ contains
    !-----------------------------------------------------------
    ! Direct autocorrelation calculation (non-Hagedorn case)
    !-----------------------------------------------------------
-   corre_coeff     = DOT_PRODUCT(psi0%CVec, psi_dt%CVec)
+   corre_coeff     = Dot_Psi(psi0,psi_dt)
    X               = REAL(corre_coeff, kind=Rkind)
    Y               = AIMAG(corre_coeff)
    arg_corre_coeff = ATAN2(Y, X)

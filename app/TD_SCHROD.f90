@@ -17,36 +17,21 @@ PROGRAM TD_SCHROD
    TYPE(propa_t)                :: propa        ! Propagation parameters
    TYPE(GWP_t), ALLOCATABLE     :: tab_GWP(:)   ! Gaussian wavepacket parameters
    INTEGER, ALLOCATABLE         :: Tab_iq(:, :) ! Index mapping for operator setup
-   !REAL(Kind=Rkind), ALLOCATABLE :: V(:, :, :)  ! Scalar potential (optional)
 
    ! Variables for initial WP parameters
    REAL(Kind=Rkind) :: E, Norm
-   !REAL(Kind=Rkind) :: Pt(2), Qt(2), SQt(2)
-   !COMPLEX(Kind=Rkind) :: At(2)
-   !REAL(Kind=Rkind) :: t_deltat = 0
+
+   CALL Stage_Standard_Input()
 
    !======================= QML and Potential Info ====================
-   INTEGER :: ndim, nsurf, option
-   LOGICAL :: adiabatic
-   CHARACTER(len=16) :: pot_name
-
-   !======================= Initialization ============================
-   ndim = -1
-   nsurf = -1
-   pot_name = 'read_model'
-   adiabatic = .false.
-   option = 1
-
-   ! Initialize QML potential model
-   CALL sub_Init_Qmodel(ndim, nsurf, pot_name, adiabatic, option)
-   WRITE(out_unit, *) 'ndim, nsurf', ndim, nsurf
-   WRITE(out_unit, *) 'pot_name'
-   
-
+    ! Initialize QML potential model
+   call  InitQModelBasisParam(nio=in_unit)
+   !CALL sub_Init_Qmodel(ndim, nsurf, pot_name, adiabatic, option)
    !===================================================================
    ! Read basis set parameters from input file and construct basis
    CALL Read_Basis(Basis, nio=in_unit)
    CALL construct_primitive_basis(Basis)
+   !nb = Basis%nb
    !CALL Write_Basis(Basis) 
    !STOP 'cc'
 
@@ -64,16 +49,16 @@ PROGRAM TD_SCHROD
    !CALL test_basitogridgridtobasis(Basis)
 
    ! Construct operator H
-   CALL Calc_tab_Iq0(Tab_Iq, psi0%Basis)
-   !stop 'cc'
-   CALL Set_Op(H, psi0%Basis, Tab_Iq,alloc=.TRUE.)
-
+   CALL Calc_tab_Iq0(Tab_Iq,Basis)
+   CALL Set_Op(H, Basis, Tab_Iq,alloc=.TRUE.,nio=in_unit)
    ! Initialize psi0 using the GWP parameters
    CALL psi_init_GWP(psi=psi0, Tab_GWP=tab_GWP)
+   !CALL Write_VecMat(psi0%CVec, out_unit, 5, info='psi0%CVec')
 
+   !CALL Save_Potential_ToFile(H%Scal_pot,Basis)
+   !CALL H_spectrum(H=H,N_states=Basis%nb,psi=psif)
    !CALL Test_Calc_S()
    !CALL Ecrire_psi(psi0, nio=100, t=ZERO)
-
    !PRINT*, "psi0", psi0%CVec(:)
    !psi0%CVec = CZERO
    !psi0%CVec(1) = CONE
@@ -90,6 +75,10 @@ PROGRAM TD_SCHROD
    WRITE(out_unit, *) ' <psi|H|psi> ', E, ' <psi|psi> ', Norm
    WRITE(out_unit, *) '-------------End Initialization of psi0 -------------------------------'
 
+   IF (Basis_UsesSmolyakSparseGrid(Basis)) THEN
+      CALL Validate_Smolyak_Implementation(H, psi0)
+   END IF
+
    !CALL Test_projection_hagedorn(Basis, psi0)
    !CALL test_op(Basis, psi0)  ! Diagonalization test
    !CALL Calc_Scalar_Pot(V, Basis)
@@ -99,11 +88,17 @@ PROGRAM TD_SCHROD
 
    ! Read propagation parameters
    CALL read_propa(propa)
-   !CALL Make_Mat_H(Basis,Op)
-
+   IF (propa%diag_H) THEN
+      WRITE(out_unit,*) '===== Hamiltonian diagnostic requested ====='
+      CALL H_spectrum(H, MIN(10, Get_TotalBasisCoefficientCount(Basis)))
+      WRITE(out_unit,*) '===== End Hamiltonian diagnostic ====='
+   END IF
+   IF (propa%action_H) CALL H_action_diagnostic(H, psi0)
+   !CALL Make_Mat_H(Op)
    !CALL Print_Grids(Basis)
    !CALL Test_NUFFT_Cycle(psi0%CVec,Basis)
 
+   !call Test_Compare_Overlap_ThreeMethods()
    !CALL Test_Calc_M22(Basis)
    !CALL Verify_M22_2D(Basis)
    !CALL Test_All_Derivatives(psi0)
@@ -113,8 +108,8 @@ PROGRAM TD_SCHROD
    !STOP 'calcul de H|psi> est fait'
 
    !====================== Time Propagation ============================
-   CALL propagation(psif, psi0, propa)
-   PRINT*, 'Fin de la propagation'
+   CALL propagation(psif, psi0, propa, H)
+   WRITE(out_unit, *)  'Fin de la propagation'
 
    !CALL Write_psi(psif)
 
@@ -122,5 +117,6 @@ PROGRAM TD_SCHROD
    WRITE(out_unit, *) 'deallocation'
    CALL dealloc_psi(psi0)
    CALL dealloc_psi(psif)
+
 
 END PROGRAM TD_SCHROD

@@ -1,192 +1,136 @@
 MODULE NDindex_m
-  USE QDUtil_m, out_unit => out_unit
+  USE QDUtil_m, ONLY: out_unit
   IMPLICIT NONE
+  PRIVATE
 
-  TYPE :: NDindex_t
-    integer                       :: Ndim            = 0
-    integer,  allocatable         :: Tab0(:)      ! = [0,1]
-    integer, allocatable          :: NDsize(:)
-    integer, allocatable          :: NDend(:)
+  INTEGER, PARAMETER, PUBLIC :: NDINDEX_TENSOR  = 0
+  INTEGER, PARAMETER, PUBLIC :: NDINDEX_SMOLYAK = 1
+
+  TYPE, PUBLIC :: NDindex_t
+    INTEGER                       :: Ndim = 0
+    INTEGER                       :: mode = NDINDEX_TENSOR
+    INTEGER                       :: qmin = 0
+    INTEGER                       :: qmax = -1
+    INTEGER, ALLOCATABLE          :: Tab0(:)
+    INTEGER, ALLOCATABLE          :: NDsize(:)
+    INTEGER, ALLOCATABLE          :: NDend(:)
   END TYPE NDindex_t
 
-  PRIVATE
-  PUBLIC :: increase_NDindex,Init_tab_ind,Testindex,NDindex_t,Init_NDindex,dealloc_NDindex!,alloc_Tab
+  PUBLIC :: increase_NDindex, Init_tab_ind, Testindex, Init_NDindex
+  PUBLIC :: dealloc_NDindex, Write_NDindex
 
 CONTAINS
 
+  SUBROUTINE Init_NDindex(NDindex, NDend, Ndim, index_mode, smolyak_qmin, smolyak_qmax)
+    TYPE(NDindex_t), INTENT(INOUT) :: NDindex
+    INTEGER, INTENT(IN)            :: NDend(:)
+    INTEGER, INTENT(IN)            :: Ndim
+    INTEGER, INTENT(IN), OPTIONAL   :: index_mode, smolyak_qmin, smolyak_qmax
+    INTEGER :: i
 
-  SUBROUTINE Init_NDindex(NDindex,NDend,Ndim) !initialisation des elements du tableau.
-    TYPE(NDindex_t),intent(inout) :: NDindex
-    integer ,      intent(in)     :: NDend(:)
-    integer ,      intent(in)     :: Ndim
-    !logical,    parameter         :: debug = .true.
-    logical,     parameter        :: debug = .false.
-
-    IF (debug) THEN
-      write(out_unit,*) 'BEGINNING Init_NDindex'
-      flush(out_unit)
-    END IF
+    CALL dealloc_NDindex(NDindex)
+    IF (Ndim < 1 .OR. SIZE(NDend) /= Ndim) STOP 'Init_NDindex: invalid dimension or upper bounds'
 
     NDindex%Ndim = Ndim
     NDindex%NDend = NDend
-    Allocate(NDindex%Tab0(NDindex%Ndim))
-    NDindex%Tab0(:)   = 1
-    NDindex%Tab0(1)   = 0
+    ALLOCATE(NDindex%Tab0(Ndim), NDindex%NDsize(Ndim))
+    NDindex%NDsize = NDend + 1
+    NDindex%mode = NDINDEX_TENSOR
+    IF (PRESENT(index_mode)) NDindex%mode = index_mode
 
-    IF (debug) THEN
-      write(out_unit,*) NDindex%Ndim
-      write(out_unit,*)'NDindex%Ndend', NDindex%Ndend
-      write(out_unit,*)'NDindex%Tab0', NDindex%Tab0(:)
-      write(out_unit,*) 'END Init_NDindex'
-
-      flush(out_unit)
+    IF (NDindex%mode == NDINDEX_SMOLYAK) THEN
+      NDindex%qmin = 0
+      NDindex%qmax = SUM(NDend)
+      IF (PRESENT(smolyak_qmin)) NDindex%qmin = MAX(0, smolyak_qmin)
+      IF (PRESENT(smolyak_qmax)) NDindex%qmax = MIN(SUM(NDend), smolyak_qmax)
+      IF (NDindex%qmax < NDindex%qmin) STOP 'Init_NDindex: invalid Smolyak q interval'
+      NDindex%Tab0 = 0
+    ELSE
+      ! Historical convention: the first index starts at zero and all
+      ! following components start at one; the first increment yields 1-based
+      ! tensor-product indices in the order used by the project.
+      NDindex%Tab0 = 1
+      NDindex%Tab0(1) = 0
     END IF
-
+    DO i=1,Ndim
+      IF (NDindex%Tab0(i) > NDindex%NDend(i)) STOP 'Init_NDindex: empty index range'
+    END DO
   END SUBROUTINE Init_NDindex
 
-  SUBROUTINE Init_tab_ind(Tab_ind,NDindex)
-    USE QDUtil_m
-    IMPLICIT NONE
-    TYPE(NDindex_t),  intent(in) :: NDindex
-    integer,     intent(inout)   :: Tab_ind(:)
-
-    !logical,    parameter       :: debug = .true.
-    logical,     parameter       :: debug = .false.
-
-    IF (debug) THEN
-      write(out_unit,*) 'BEGINNING Init_tab_ind'
-      flush(out_unit)
-    END IF
-
-     Tab_ind(:)= NDindex%Tab0(:)
-
-    IF (debug) THEN
-      write(out_unit,*) 'END Init_tab_ind'
-      flush(out_unit)
-    END IF
-
+  SUBROUTINE Init_tab_ind(Tab_ind, NDindex)
+    TYPE(NDindex_t), INTENT(IN)    :: NDindex
+    INTEGER, INTENT(INOUT)         :: Tab_ind(:)
+    IF (SIZE(Tab_ind) /= NDindex%Ndim) STOP 'Init_tab_ind: incompatible size'
+    Tab_ind = NDindex%Tab0
   END SUBROUTINE Init_tab_ind
 
-  SUBROUTINE increase_NDindex(Tab_ind,NDindex,Endloop)
-    USE QDUtil_m
-    IMPLICIT NONE
+  SUBROUTINE increase_NDindex(Tab_ind, NDindex, Endloop)
+    TYPE(NDindex_t), INTENT(IN) :: NDindex
+    INTEGER, INTENT(INOUT)      :: Tab_ind(:)
+    LOGICAL, INTENT(INOUT)      :: Endloop
+    INTEGER :: i
 
-    TYPE(NDindex_t),  intent(in) :: NDindex
-
-    integer,     intent(inout)   :: Tab_ind(:)
-    !logical,    parameter       :: debug = .true.
-    logical,     parameter       :: debug = .false.
-    logical,     intent(inout)   :: Endloop
-    integer                      :: i
-
-
-    IF (debug) THEN
-      write(out_unit,*) 'BEGINNING Tab_ind'
-      write(out_unit,*)'NDindex%Ndend', NDindex%Ndend
-      write(out_unit,*)'Tab_ind1', Tab_ind
-      flush(out_unit)
+    IF (NDindex%mode == NDINDEX_SMOLYAK) THEN
+      DO
+        Tab_ind(1) = Tab_ind(1) + 1
+        DO i=1,NDindex%Ndim-1
+          IF (Tab_ind(i) <= NDindex%NDend(i)) EXIT
+          Tab_ind(i) = 0
+          Tab_ind(i+1) = Tab_ind(i+1) + 1
+        END DO
+        IF (Tab_ind(NDindex%Ndim) > NDindex%NDend(NDindex%Ndim)) THEN
+          Endloop = .TRUE.
+          RETURN
+        END IF
+        IF (SUM(Tab_ind) >= NDindex%qmin .AND. SUM(Tab_ind) <= NDindex%qmax) THEN
+          Endloop = .FALSE.
+          RETURN
+        END IF
+      END DO
     END IF
 
-    Tab_ind(1)=Tab_ind(1)+1
-    IF (debug)  write(out_unit,*)'Tab_indd', Tab_ind
-    
+    Tab_ind(1) = Tab_ind(1) + 1
     DO i=1,NDindex%Ndim-1
-
-       IF(Tab_ind(i) > NDindex%Ndend(i)) THEN
-         Tab_ind(i+1)=Tab_ind(i+1)+1
-         Tab_ind(i)=1
-       END IF
+      IF (Tab_ind(i) > NDindex%NDend(i)) THEN
+        Tab_ind(i+1) = Tab_ind(i+1) + 1
+        Tab_ind(i) = 1
+      END IF
     END DO
-    IF (debug) write(out_unit,*)'Tab_indfin', Tab_ind(NDindex%Ndim)
-
-    Endloop =(Tab_ind(NDindex%Ndim)==NDindex%Ndend(NDindex%Ndim)+1)
-
-
-    
-
-    IF (debug) THEN
-      write(out_unit,*) 'END Tab_ind'
-      flush(out_unit)
-    END IF
-
+    Endloop = (Tab_ind(NDindex%Ndim) == NDindex%NDend(NDindex%Ndim)+1)
   END SUBROUTINE increase_NDindex
 
-    SUBROUTINE Write_NDindex(NDindex)
-      USE QDUtil_m
-      IMPLICIT NONE
-
-      TYPE(NDindex_t),  intent(in) :: NDindex
-      !logical,    parameter      :: debug = .true.
-      logical,     parameter      :: debug = .false.
-
-      IF (debug) THEN
-        write(out_unit,*) 'BEGINNING Write_NDindex'
-        flush(out_unit)
-      END IF
-
-      write(out_unit,*) 'NDindex%Ndim =',NDindex%Ndim
-      write(out_unit,*)'NDindex%Ndend =', NDindex%Ndend
-      write(out_unit,*)'NDindex%Tab0 =', NDindex%Tab0(:)
-
-      IF (debug) THEN
-        write(out_unit,*) ' END Write_NDindex'
-        flush(out_unit)
-      END IF
-
-    END SUBROUTINE Write_NDindex
-
+  SUBROUTINE Write_NDindex(NDindex)
+    TYPE(NDindex_t), INTENT(IN) :: NDindex
+    WRITE(out_unit,*) 'NDindex%Ndim =', NDindex%Ndim
+    WRITE(out_unit,*) 'NDindex%mode =', NDindex%mode
+    WRITE(out_unit,*) 'NDindex%qmin/qmax =', NDindex%qmin, NDindex%qmax
+    WRITE(out_unit,*) 'NDindex%NDend =', NDindex%NDend
+    WRITE(out_unit,*) 'NDindex%Tab0 =', NDindex%Tab0
+  END SUBROUTINE Write_NDindex
 
   SUBROUTINE dealloc_NDindex(NDindex)
-   USE QDUtil_m
-   IMPLICIT NONE
-   TYPE(NDindex_t),  intent(inout) :: NDindex
-   !logical,    parameter      :: debug = .true.
-   logical,     parameter      :: debug = .false.
-   IF (debug) THEN
-     write(out_unit,*) 'BEGINNING dealloc_NDindex'
-     flush(out_unit)
-   END IF
-   If(allocated(NDindex%Ndend)) deallocate(NDindex%Ndend)
-   If(allocated(NDindex%Tab0)) deallocate(NDindex%Tab0)
- 
-   IF (debug) THEN
-     write(out_unit,*) ' END dealloc_NDindex'
-     flush(out_unit)
-   END IF
- END SUBROUTINE
+    TYPE(NDindex_t), INTENT(INOUT) :: NDindex
+    IF (ALLOCATED(NDindex%NDend))  DEALLOCATE(NDindex%NDend)
+    IF (ALLOCATED(NDindex%NDsize)) DEALLOCATE(NDindex%NDsize)
+    IF (ALLOCATED(NDindex%Tab0))   DEALLOCATE(NDindex%Tab0)
+    NDindex%Ndim = 0
+    NDindex%mode = NDINDEX_TENSOR
+    NDindex%qmin = 0
+    NDindex%qmax = -1
+  END SUBROUTINE dealloc_NDindex
 
   SUBROUTINE Testindex(NDindex)
-    USE QDUtil_m
-    IMPLICIT NONE
-
-    TYPE(NDindex_t),  intent(in) :: NDindex
-    integer, allocatable         :: Tab_ind(:)
-    logical                      :: Endloop
-  !  integer,     intent(in)      :: nl
-    integer                      :: i
-    !logical,    parameter      :: debug = .true.
-    logical,     parameter      :: debug = .false.
-
-    IF (debug) THEN
-      write(out_unit,*) 'BEGINNING Testindex'
-      flush(out_unit)
-    END IF
-    Allocate(Tab_ind(NDindex%Ndim))
-    Call Init_tab_ind(Tab_ind,NDindex)
-
-    i=0
-    !write(out_unit,*) i, tab_ind(:)
-    DO !i= 1,100
-      i=i+1
-      CALL increase_NDindex(Tab_ind,NDindex,Endloop)
-        IF (Endloop) exit
-      write(out_unit,*) i, tab_ind(:)
+    TYPE(NDindex_t), INTENT(IN) :: NDindex
+    INTEGER, ALLOCATABLE :: Tab_ind(:)
+    LOGICAL :: Endloop
+    ALLOCATE(Tab_ind(NDindex%Ndim))
+    CALL Init_tab_ind(Tab_ind, NDindex)
+    DO
+      CALL increase_NDindex(Tab_ind, NDindex, Endloop)
+      IF (Endloop) EXIT
+      WRITE(out_unit,*) Tab_ind
     END DO
-
-    IF (debug) THEN
-      write(out_unit,*) 'END Testindex'
-      flush(out_unit)
-    END IF
-
+    DEALLOCATE(Tab_ind)
   END SUBROUTINE Testindex
+
 END MODULE NDindex_m

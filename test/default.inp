@@ -20,6 +20,14 @@ cd results_anhar-h2D-t60-ttt_nb$nb
 
 # Run the TD_SCHROD.x program with input redirected from here-document
 $EXE<< ** > resultat_H.lua
+
+&coordQMLpot
+coord_type = 'CC'
+sym_type   = 'SYM'
+model_type = 'QML'
+pot0       = 0.0
+/
+
 &potential
     pot_name  = 'HenonHeiles'     ! Potential energy surface name
     option    = 3                 ! Option for potential setup
@@ -46,6 +54,6 @@ $EXE<< ** > resultat_H.lua
     eps=1.e-20 max_iter=500            ! Precision and max iterations
     propa_name='hagedorn'              ! Primary propagator
     propa_name2='taylor'               ! Optional secondary propagator
-    Beta=t P=t renorm= t               ! propagation options
+    Beta=t P=t renorm= f              ! propagation options
 /
 **

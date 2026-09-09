@@ -14,6 +14,7 @@ MODULE sub_propa_m
    USE lanczos_m
    USE Sub_Vp_m
    USE Basis_m
+   USE SmolyakSparseGridMetadata_m, ONLY: DotSmolyakBasis
    
    implicit none
 
@@ -46,11 +47,13 @@ MODULE sub_propa_m
       LOGICAL                        :: Beta 
       LOGICAL                        :: P
       LOGICAL                        :: renorm
+      LOGICAL                        :: diag_H = .FALSE.
+      LOGICAL                        :: action_H = .FALSE.
    END TYPE propa_t
 
    ! Define public interfaces
    PUBLIC :: march_taylor, march
-   PUBLIC :: write_propa, Analyse, creat_file_unit, read_propa
+   PUBLIC :: write_propa, Analyse, open_propa_file, read_propa
    PUBLIC :: CopyPsi
 
 CONTAINS
@@ -149,12 +152,21 @@ CONTAINS
       REAL(KIND=Rkind), ALLOCATABLE        :: pop(:), Qm(:), Qp(:)
       REAL(KIND=Rkind)                     :: Norm, E
       INTEGER                              :: Ndim
+      INTEGER, SAVE                        :: u_pop_an = -1, u_Qm_an = -1, u_Qp_an = -1
+      LOGICAL, SAVE                        :: analysis_files_open = .FALSE.
 
       !allocate variables ----------------------------------------------------
       Ndim = size(psi%Basis%tab_basis)
       ALLOCATE (Pop(psi%Basis%tab_basis(Ndim)%nb))
       ALLOCATE (Qp(psi%Basis%tab_basis(Ndim)%nb))
       ALLOCATE (Qm(Ndim - 1))
+
+      IF (.NOT. analysis_files_open) THEN
+         CALL open_propa_file(u_pop_an, 'population')
+         CALL open_propa_file(u_Qm_an, 'Qm')
+         CALL open_propa_file(u_Qp_an, 'Qp')
+         analysis_files_open = .TRUE.
+      END IF
 
       ! Initialize variables --------------------------------------------------
       pop(:) = ZERO
@@ -168,9 +180,9 @@ CONTAINS
       call Calc_Norm_OF_psi(psi, Norm)
       call Qpop(psi, Qp)
       
-      write (3, *) t, E, Norm, pop
-      write (4, *) t, Qm
-      write (5, *) t, Qp
+      WRITE (u_pop_an, *) t, E, Norm, pop
+      WRITE (u_Qm_an, *) t, Qm
+      WRITE (u_Qp_an, *) t, Qp
       
       !deallocate variables --------------------------------------------------
       DEALLOCATE (pop, Qm, Qp)
@@ -213,7 +225,7 @@ CONTAINS
       CALL init_psi(Hpsi, psi%basis, cplx=.true., grid=.FALSE.)
       CALL init_psi(psi0, psi%basis, cplx=.true., grid=.FALSE.)
    
-      alpha = TEN**10
+      alpha = TEN**15
       psi_dt%CVec = psi%CVec
       psi0%CVec = psi%CVec
 
@@ -643,7 +655,7 @@ SUBROUTINE march_VP(psi, psi_dt, t, propa, H)
    LOGICAL, PARAMETER                 :: debug = .TRUE.
  
 
-   CALL init_psi(tmp, psi%Basis, cplx=.TRUE., grid=.TRUE.)
+   CALL init_psi(tmp, psi%Basis, cplx=.TRUE., grid=.FALSE.)
    tmp%CVec = psi%CVec
    !------------------------------------------------------------
    ! Step 1. Convert psi -> Lambda
@@ -739,7 +751,7 @@ SUBROUTINE march_VP_RK4(psi, psi_dt, t, propa, H)
    ! Step 1. Convert psi -> Lambda
    !------------------------------------------------------------
    CALL init_psi(tmp_psi, psi%Basis, cplx=.TRUE., grid=.FALSE.)
-   CALL Set_Op(tmp_op, psi%Basis, Tab_Iq,alloc=.FALSE.)
+   CALL Set_Op(tmp_op, psi%Basis, Tab_Iq,alloc=.FALSE.,nio=in_unit)
    tmp_psi%CVec = psi%CVec
    CALL Psi_Lambda_Transform(tmp_psi, Lambda, .TRUE.)
    nC = SIZE(Lambda)
@@ -772,7 +784,7 @@ SUBROUTINE march_VP_RK4(psi, psi_dt, t, propa, H)
    CALL init_psi(tmp_psi, psi%Basis, cplx=.TRUE., grid=.FALSE.)
    CALL Psi_Lambda_Transform(tmp_psi, Lambda_temp, .FALSE.)
    
-   CALL Set_Op(tmp_op, tmp_psi%Basis, Tab_Iq,alloc=.FALSE.)
+   CALL Set_Op(tmp_op, tmp_psi%Basis, Tab_Iq,alloc=.FALSE.,nio=in_unit)
    CALL Calc_M_nD(psi=tmp_psi, M_nD=M)
    CALL Calc_F_nD(psi=tmp_psi, H=tmp_op, F_nD=F)
 
@@ -786,7 +798,7 @@ SUBROUTINE march_VP_RK4(psi, psi_dt, t, propa, H)
    
    CALL Psi_Lambda_Transform(tmp_psi, Lambda_temp, .FALSE.)
    
-   CALL Set_Op(tmp_op, tmp_psi%Basis, Tab_Iq,alloc=.FALSE.)
+   CALL Set_Op(tmp_op, tmp_psi%Basis, Tab_Iq,alloc=.FALSE.,nio=in_unit)
    CALL Calc_M_nD(psi=tmp_psi, M_nD=M)
    CALL Calc_F_nD(psi=tmp_psi, H=tmp_op, F_nD=F)
    
@@ -800,7 +812,7 @@ SUBROUTINE march_VP_RK4(psi, psi_dt, t, propa, H)
    
    CALL Psi_Lambda_Transform(tmp_psi, Lambda_temp, .FALSE.)
    
-   CALL Set_Op(tmp_op, tmp_psi%Basis, Tab_Iq,alloc=.FALSE.)
+   CALL Set_Op(tmp_op, tmp_psi%Basis, Tab_Iq,alloc=.FALSE.,nio=in_unit)
    CALL Calc_M_nD(psi=tmp_psi, M_nD=M)
    CALL Calc_F_nD(psi=tmp_psi, H=tmp_op, F_nD=F)
    
@@ -964,7 +976,7 @@ SUBROUTINE march_VP_RK4(psi, psi_dt, t, propa, H)
    temp_M = MATMUL(M_CL, M_LL)
    
    ! M_CL * M_LL * TRANSPOSE(M_CL)
-   Schur_M = MATMUL(temp_M, TRANSPOSE(M_CL))
+   Schur_M = MATMUL(temp_M, CONJG(TRANSPOSE(M_CL)))
    
    ! Schur complement: M_CC - M_CL * M_LL^{-1} * M_CL^T
    Schur_M = M_CC - Schur_M
@@ -1004,8 +1016,9 @@ SUBROUTINE march_VP_RK4(psi, psi_dt, t, propa, H)
       WRITE(out_unit,*) error_msg
       STOP
    END IF
-   
+   temp_M = Schur_M
    Schur_M = inv_OF_Mat(temp_M, inv_type=0, epsi=1.d-20)
+
    DEALLOCATE(temp_M, stat=alloc_stat)
    IF (alloc_stat /= 0) THEN
       WRITE(out_unit,*) 'Warning: Deallocation failed for temp_M'
@@ -1025,7 +1038,7 @@ SUBROUTINE march_VP_RK4(psi, psi_dt, t, propa, H)
    END IF
    
    ! D_L = FL - M_CL^T * D_C
-   D_L = FL - MATMUL(TRANSPOSE(M_CL), D_C)
+   D_L = FL - MATMUL(CONJG(TRANSPOSE(M_CL)), D_C)
    
    ! D_L = M_LL * D_L
    D_L = MATMUL(M_LL, D_L)
@@ -1133,8 +1146,8 @@ SUBROUTINE march_CN(psi, psi_dt, t, propa, H)
    END IF
 
    !initialize  Op
-   !CALL set_op(Op, psi%basis,Tab_Iq,alloc=.TRUE.)
-   CALL Make_Mat_H(psi%basis,Op)
+   CALL set_op(Op, psi%basis,Tab_Iq,alloc=.TRUE., nio=in_unit)
+   CALL Make_Mat_H(Op)
 
    ! Build Crank–Nicolson propagator U
    CALL Build_CN_Propagator(Op%CMat, propa%delta_t, U)
@@ -2044,10 +2057,10 @@ SUBROUTINE read_propa(propa)
    REAL(KIND=Rkind)             :: t0, tf, delta_t, eps, E_min, E_max
    CHARACTER(LEN=40)            :: propa_name, propa_name2
    INTEGER                      :: max_iter
-   LOGICAL                      :: Beta, P, renorm
+   LOGICAL                      :: Beta, P, renorm, diag_H, action_H
 
    NAMELIST /prop/ t0, tf, delta_t, max_iter, eps, E_min, E_max, propa_name, propa_name2, &
-                   Beta, P, renorm
+                   Beta, P, renorm, diag_H, action_H
 
    ! Default values
    t0          = ZERO
@@ -2062,6 +2075,8 @@ SUBROUTINE read_propa(propa)
    Beta        = .TRUE.
    P           = .TRUE.
    renorm      = .TRUE.
+   diag_H      = .FALSE.
+   action_H    = .FALSE.
 
    ! Read the namelist
    READ (*, NML=prop)
@@ -2079,6 +2094,8 @@ SUBROUTINE read_propa(propa)
    propa%Beta        = Beta
    propa%P           = P 
    propa%renorm      = renorm
+   propa%diag_H      = diag_H
+   propa%action_H    = action_H
 
    ! Convert method names to lowercase
    CALL string_uppercase_TO_lowercase(propa%propa_name)
@@ -2255,15 +2272,25 @@ END SUBROUTINE write_propa
          CALL init_psi(Hpsi, psi%Basis, cplx=.TRUE., grid=.FALSE.)
          CALL calc_OpPsi(H, psi_b, Hpsi)
    
-         ! Compute <psi_b | H | psi_b>
-         E = REAL(DOT_PRODUCT(Hpsi%CVec, psi_b%CVec), KIND=Rkind)
+         ! Compute <psi_b | H | psi_b> with the physical metric.
+         ! A packed Smolyak vector contains overlapping term blocks, so a
+         ! plain DOT_PRODUCT would count coefficients with the wrong metric.
+         IF (Basis_UsesSmolyakSparseGrid(psi_b%Basis)) THEN
+            E = REAL(DotSmolyakBasis(psi_b%CVec, Hpsi%CVec, psi_b%Basis%SmolyakSparseGrid), KIND=Rkind)
+         ELSE
+            E = REAL(DOT_PRODUCT(Hpsi%CVec, psi_b%CVec), KIND=Rkind)
+         END IF
       ELSE
          ! Directly apply H to wavefunction
          CALL init_psi(Hpsi, psi%Basis, cplx=.TRUE., grid=.FALSE.)
          CALL calc_OpPsi(H, psi, Hpsi)
    
-         ! Compute <psi | H | psi>
-         E = REAL(DOT_PRODUCT(Hpsi%CVec, psi%CVec), KIND=Rkind)
+         ! Compute <psi | H | psi> with the physical metric.
+         IF (Basis_UsesSmolyakSparseGrid(psi%Basis)) THEN
+            E = REAL(DotSmolyakBasis(psi%CVec, Hpsi%CVec, psi%Basis%SmolyakSparseGrid), KIND=Rkind)
+         ELSE
+            E = REAL(DOT_PRODUCT(Hpsi%CVec, psi%CVec), KIND=Rkind)
+         END IF
       END IF
    
       ! ===== Normalize by the norm of psi =====
@@ -2284,47 +2311,31 @@ END SUBROUTINE write_propa
 !> @brief   Crée et ouvre un fichier texte pour l'enregistrement
 !>          des résultats d'une propagation.
 !>
-!> @param[in] nio     Numéro d'unité logique (unit) pour le fichier.
+!> @param[out] nio    Unité logique attribuée automatiquement par NEWUNIT.
 !> @param[in] name    Nom de base à utiliser pour créer le fichier.
-!> @param[in] propa   Structure contenant les informations sur la
-!>                    propagation (nom, type, pas de temps, etc.).
 !>
 !> @details
-!> Le nom final du fichier est construit comme :
-!>   name_propaName_propaName2.txt
-!> Exemple :
-!>   si name = "Qt", propa%propa_name = "STD", propa%propa_name2 = "nb10"
-!>   alors le fichier sera : "Qt_STD_nb10.txt"
-!>
-!> Le fichier est ouvert avec le buffering désactivé (`BUFFERED='NO'`)
-!> pour que chaque écriture soit immédiatement visible sur disque.
+!> Le nom final est simplement TRIM(name)//'.txt'. Les noms des
+!> propagateurs ne sont volontairement pas ajoutés au nom du fichier.
 !===============================================================
-SUBROUTINE creat_file_unit(nio, name, propa)
+SUBROUTINE open_propa_file(nio, name)
 
    !==== Arguments ====
-   INTEGER,          INTENT(IN) :: nio       ! Numéro d'unité du fichier
-   CHARACTER(*),     INTENT(IN) :: name      ! Nom de base du fichier
-   TYPE(propa_t),    INTENT(IN) :: propa     ! Données de la propagation
+   INTEGER,          INTENT(OUT) :: nio      ! Unité attribuée par NEWUNIT
+   CHARACTER(*),     INTENT(IN)  :: name     ! Nom de base du fichier
 
    !==== Variables locales ====
-   CHARACTER(100) :: name_tot   ! Nom complet du fichier
-   CHARACTER(20)  :: dt         ! Pas de temps converti en chaîne
-   CHARACTER(8)   :: fmt        ! Format pour afficher le pas de temps
+   CHARACTER(512) :: name_tot
+   INTEGER :: ios
 
-   !==== Construction du format pour écrire delta_t ====
-   fmt = "(E0.1)"
-   WRITE(dt, fmt) propa%delta_t
-
-   !==== Construction du nom complet du fichier ====
-   name_tot = TRIM(name) // '_' // TRIM(propa%propa_name) // '_' // &
-              TRIM(propa%propa_name2) // '.txt'
+   name_tot = TRIM(name) // '.txt'
 
    !==== Ouverture du fichier ====
-   ! BUFFERED='NO' → désactive le buffering pour écriture immédiate
-   OPEN(UNIT=nio, FILE=name_tot, STATUS='UNKNOWN', ACTION='WRITE', &
-        FORM='FORMATTED')
+   OPEN(NEWUNIT=nio, FILE=TRIM(name_tot), STATUS='REPLACE', ACTION='WRITE', &
+        FORM='FORMATTED', IOSTAT=ios)
+   IF (ios /= 0) ERROR STOP 'open_propa_file: cannot open output file'
 
-END SUBROUTINE creat_file_unit
+END SUBROUTINE open_propa_file
 
      !==============================================================
      !> @brief

@@ -37,6 +37,7 @@ module Ana_psi_m
     subroutine Population(Psi, Pop)
        implicit none
        type(Psi_t), intent(in), target                 :: Psi
+       complex(kind=Rkind), allocatable, target        :: DenseVec(:)
        complex(kind=Rkind), pointer                    :: Psi_bb(:, :)
        real(Kind=Rkind), intent(inout), allocatable    ::Pop(:)
        integer                                         :: inb,nsurf,ndim,nb
@@ -46,14 +47,15 @@ module Ana_psi_m
        ndim = size(Psi%Basis%tab_basis)-1
        nb = Psi%Basis%nb
        nsurf = Psi%Basis%tab_basis(ndim+1)%nb
-       Psi_bb(1:nb, 1:nsurf) => Psi%CVec
+       call GetDenseBasisCoefficients(Psi, DenseVec)
+       Psi_bb(1:nb, 1:nsurf) => DenseVec
        !call Calc_Norm_OF_Psi(Psi, Norm)
  
        do inb = 1, nsurf
         ! Norm = DOT_PRODUCT(Psi_bb(:, inb), Psi_bb(:, inb))
          Pop(inb) = DOT_PRODUCT(Psi_bb(:, inb), Psi_bb(:, inb))!/Norm
        end do
- 
+       if (allocated(DenseVec)) deallocate(DenseVec)
     end subroutine 
  
     SUBROUTINE Qpop(Psi, Qp)
@@ -250,54 +252,63 @@ module Ana_psi_m
    SUBROUTINE Calc_Av_imp_k_nD(psi0, K)
       USE QDUtil_m
       IMPLICIT NONE
-  
-      !----------------- Arguments -----------------
-      TYPE(psi_t),       INTENT(IN)           :: psi0
-      REAL(KIND=Rkind),  INTENT(INOUT)        :: K(:)
-  
-      !----------------- Locals --------------------
-      TYPE(psi_t), TARGET                 :: psi
-      LOGICAL, PARAMETER                  :: debug = .FALSE.  ! local debug
-      INTEGER                             :: Ndim, Inb
-  
-      !----------------- Debug output ----------------
-      IF (debug) THEN
-          FLUSH(out_unit)
-          !WRITE(out_unit,*) '>>> Calc_Av_imp_k_nD start'
-      END IF
-  
-      !----------------- Setup ---------------------
-      Ndim = SIZE(psi0%Basis%tab_basis) - 1
-      CALL init_psi(psi, psi0%Basis, cplx=.TRUE., grid=.TRUE.)
-  
-      ! Zero out wavefunction and output
-      psi%CVec(:) = CZERO
-      K(:)        = ZERO
-  
-      ! Ensure psi is on the grid
+      TYPE(psi_t), INTENT(IN) :: psi0
+      REAL(KIND=Rkind), INTENT(INOUT) :: K(:)
+      TYPE(psi_t) :: psi
+      INTEGER, ALLOCATABLE :: Tab_Iq(:,:), dims(:), idx(:), idx2(:)
+      COMPLEX(KIND=Rkind), ALLOCATABLE :: psi_gb(:,:)
+      INTEGER :: ndim, nsurf, nq, iq, is, idim, idim2, j, iq2, row, stride
+      REAL(KIND=Rkind) :: norm, weight
+      COMPLEX(KIND=Rkind) :: dpsi
+
+      ndim=SIZE(psi0%Basis%tab_basis)-1
+      nsurf=psi0%Basis%tab_basis(ndim+1)%nb
+      nq=psi0%Basis%nq
+      K(:)=ZERO
+      CALL init_psi(psi,psi0%Basis,cplx=.TRUE.,grid=.TRUE.)
       IF (psi0%Grid) THEN
-          psi%CVec(:) = psi0%CVec(:)
+         psi%CVec=psi0%CVec
       ELSE
-          CALL BasisTOGrid_nD_cplx(psi%CVec, psi0%CVec, psi0%Basis)
+         CALL BasisTOGrid_nD_cplx(psi%CVec,psi0%CVec,psi0%Basis)
       END IF
-  
-      !----------------- Loop over spatial dimensions -----------------
-      DO Inb = 1, Ndim
-          CALL Calc_Av_imp_k_1D(psi, K(Inb), Inb)
+      ALLOCATE(psi_gb(nq,nsurf),dims(ndim),idx(ndim),idx2(ndim))
+      psi_gb=RESHAPE(psi%CVec,[nq,nsurf])
+      CALL Calc_tab_Iq0(Tab_Iq,psi0%Basis)
+      DO idim=1,ndim
+         dims(idim)=psi0%Basis%tab_basis(idim)%nq
       END DO
-  
-      ! Optional debug output
-      IF (debug) THEN
-         WRITE(out_unit,*) ''
-          WRITE(out_unit,*) '<psi|-id_xi/psi> =', K
-          !WRITE(out_unit,*) '<<< Calc_Av_imp_k_nD done'
-          FLUSH(out_unit)
-      END IF
-  
-      !----------------- Cleanup -------------------
+      norm=ZERO
+      K(:)=ZERO
+      DO is=1,nsurf
+         DO iq=1,nq
+            idx=Tab_Iq(:,iq)
+            weight=ONE
+            DO idim=1,ndim
+               weight=weight*psi0%Basis%tab_basis(idim)%w(idx(idim))
+            END DO
+            norm=norm+REAL(CONJG(psi_gb(iq,is))*psi_gb(iq,is),KIND=Rkind)*weight
+            DO idim=1,ndim
+               row=idx(idim)
+               dpsi=CZERO
+               DO j=1,dims(idim)
+                  idx2=idx
+                  idx2(idim)=j
+                  iq2=1
+                  stride=1
+                  DO idim2=1,ndim
+                     iq2=iq2+(idx2(idim2)-1)*stride
+                     stride=stride*dims(idim2)
+                  END DO
+                  dpsi=dpsi+psi0%Basis%tab_basis(idim)%d1gg(row,j,1)*psi_gb(iq2,is)
+               END DO
+               K(idim)=K(idim)+REAL(CONJG(psi_gb(iq,is))*(-EYE*dpsi),KIND=Rkind)*weight
+            END DO
+         END DO
+      END DO
+      IF (norm > ZERO) K=K/norm
+      DEALLOCATE(psi_gb,Tab_Iq,dims,idx,idx2)
       CALL dealloc_psi(psi)
-  
-  END SUBROUTINE Calc_Av_imp_k_nD 
+   END SUBROUTINE Calc_Av_imp_k_nD
 
  
   SUBROUTINE Calc_VQP_1D(psi0, VQP, Ib)
@@ -382,7 +393,7 @@ module Ana_psi_m
  
        END DO
      END DO
-      VQP = sum(VQPel)/(Sum(N))
+      VQP = sum(VQPel)!/(Sum(N))
      
  
        call dealloc_psi(psi)
@@ -473,8 +484,8 @@ module Ana_psi_m
     END DO
  
     DO inb = 1, ndim
-       AVQ(inb) = sum(AVQel(inb,:))/(Sum(N))
-       SQ(inb) = sum(SQel(inb, :))/(Sum(N))
+       AVQ(inb) = sum(AVQel(inb,:))!/(Sum(N))
+       SQ(inb) = sum(SQel(inb, :))!/(Sum(N))
        SQ(inb) = TWO*(SQ(inb) - AVQ(inb)*AVQ(inb))
        SQ(inb) = sqrt(ONE/SQ(inb))
     
@@ -568,8 +579,8 @@ SUBROUTINE Calc_AVQ_SQ_nD_scd(psi_in, AVQ, SQ, VQQ, Tab_Iq)
 
    !----------------- Compute averages and standard deviations -----------------
    DO inb = 1, ndim
-       AVQ(inb) = SUM(AVQel(inb, :)) / (SUM(N))
-       VQQ(inb) = SUM(SQel(inb, :)) / (SUM(N))
+       AVQ(inb) = SUM(AVQel(inb, :)) !/ (SUM(N))
+       VQQ(inb) = SUM(SQel(inb, :)) !/ (SUM(N))
        SQ(inb)  = SQRT(MAX(VQQ(inb) - AVQ(inb)**2, ZERO))   
        SQ(inb)  = ONE / (SQ(inb) * SQRT(TWO))                    
    END DO

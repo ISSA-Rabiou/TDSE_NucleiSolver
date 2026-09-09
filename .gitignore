@@ -1,47 +1,126 @@
-# === EXECUTABLES ET FICHIERS COMPILÉS ===
-*.x            
-*.exe          
-*.out          
-*.o            
-*.mod          
-*.smod         
+# ============================================================
+# TD_SCHROD -- fichiers à ne pas versionner
+# ============================================================
+
+# Tout est ignoré par défaut.
+*
+
+# Le fichier de règles lui-même.
+!.gitignore
+
+# Autoriser la traversée des répertoires.
+!*/
+
+# Architecture et sources à versionner.
+!*.f90
+!*.inp
+!*.sh
+!README*
+!Makefile
+!LICENSE*
+!LICENCE*
+
+# Conserver le dossier test et son architecture, mais pas les sorties
+# produites par les exécutions. Les sources, scripts et inputs restent suivis.
+!test/
+!test/**/
+!test/**/*.f90
+!test/**/*.inp
+!test/**/*.sh
+!test/**/README*
+!test/**/Makefile
+
+# inputs0 se trouve dans test/. Ses fichiers .inp sont versionnés.
+# Les résultats produits dans inputs0/ sont explicitement exclus.
+!test/inputs0/
+!test/inputs0/**/*.inp
+test/inputs0/results/
+test/inputs0/results*/
+test/inputs0/res*/
+test/inputs0/resultats/
+test/inputs0/resultats*/
+
+!test/inputs_TD_SCHROD/
+!test/inputs_TD_SCHROD/**/*.inp
+test/inputs_TD_SCHROD/results/
+test/inputs_TD_SCHROD/results*/
+test/inputs_TD_SCHROD/res*/
+test/inputs_TD_SCHROD/resultats/
+test/inputs_TD_SCHROD/resultats*/
+
+
+# Bibliothèques externes : conserver le dossier, sans son contenu.
+# Le fichier .gitkeep est le seul fichier autorisé dans EXT_Lib/.
+!EXT_Lib/
+EXT_Lib/*
+!EXT_Lib/.gitkeep
+
+# Exécutables et fichiers compilés.
+*.x
+*.exe
+*.out
+*.o
+*.mod
+*.smod
 *.obj
 *.dll
 *.so
 *.a
 *.lib
 *.dylib
-*.sh
-
-# === FICHIERS TEMPORAIRES OU DE TRAVAIL ===
-*.log
-*.txt
-*.dat
-*.swap
-*.d
-*.zip
-*.pdf
-*.png
 *.gch
 *.pch
+
+# Sorties et fichiers de diagnostic.
+*.log
+*.dat
+*.txt
+*.csv
+*.res
+*.err
+*.stackdump
+*.core
+
+# Documents et archives générés localement.
+*.pdf
+*.png
+*.jpg
+*.jpeg
+*.zip
+*.tar
+*.gz
+*.7z
+
+# Fichiers temporaires et éditeurs.
+*.swap
+*.swp
+*.swo
+*.d
+*~
+.DS_Store
+
+# Outils locaux et résultats d’analyse.
 *.ipynb
-*.lua
-*.gp
-*.py
+*.pyc
+__pycache__/
+results/
+results*/
+res*/
+obj/
+build/
+output/
+outputs/
+run*/
+study_h2o/
+deliverables/
+livraison_finale/
+livraison_finale_TD_SCHROD/
 
-# === DOSSIERS DE RÉSULTATS ===
-res*            
-results*         
-obj
+# Seul EXT_Lib est utilisé par le Makefile.
+# Les deux variantes de casse ne sont pas versionnées.
+EXT_lib/
+ext_lib/
 
-# === OUTILS ET LIBS LOCAUX ===
-EXT_Lib/
-
-# === WINSURF ===
-winsurf/          
-*.wsv            
-*.srf            
-*.sur 
-calc*
-spectrum* 
-diff*          
+# Conserver le dossier EXT_Lib sans ses bibliothèques.
+EXT_Lib/*
+!EXT_Lib/.gitkeep

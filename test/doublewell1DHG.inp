@@ -1,0 +1,63 @@
+#!/bin/bash
+#
+# Build the executable (uncomment the next line to clean first)
+DIR_TD=/Users/issa/Developpements/TD_Schrod_Rabiou
+EXE=$DIR_TD/TD_SCHROD.x
+
+
+# Read the number of basis functions as the first argument
+nb=$1
+
+# Compute nq as nb + 10
+nq=$((nb + 10))
+
+# Print nb and nq for logging
+echo "nb = $nb, nq = $nq"
+
+# Create results directory and move into it
+mkdir -p results_doublewell1DHAG_nb$nb
+cd results_doublewell1DHAG_nb$nb || exit 1
+
+
+# Run the TD_SCHROD.x program with input redirected from here-document
+$EXE<< ** > resultat_doublewell1DHAG.lua
+
+&coordQMLpot
+coord_type = 'CC'
+sym_type   = 'SYM'
+model_type = 'QML'
+pot0       = 0.0
+/
+
+
+&potential
+  pot_name  = 'DoubleWell'
+  ndim      = 1
+  nsurf     = 1
+  read_nml  = t
+/
+
+&DoubleWell
+  a = 6.0
+  b = 2.0
+/
+
+&basis_nd name='dp' nb_basis=2 /                        
+&basis_nd name='HO' nb=$nb nq=$nq Q0=-1.7320508075688772 SCALEQ=1.8612097182041993 Imp_k=0.0 alpha=(3.4641016151377553,0.0) /
+&basis_nd name='el' nb=1 /                             
+
+/ ! Define the initial Gaussian wave packet (GWP)
+&defGWP ndim=1 Elecindex=1 Coef=(1.0, 0.0) /
+
+  ! Define initial wavepacket components (1 per dimension)
+  &defWP0 sigma=0.75983568565159254 Beta=0.0 Qeq=-1.7320508075688772 imp_k=0.0 gamma=0.0 /
+
+! Propagation parameters
+&prop
+  t0=0.0 tf=150.0 delta_t=0.1        ! Time range and step
+  eps=1.e-20 max_iter=500            ! Precision and max iterations
+  propa_name='hagedorn'              ! Primary propagator
+  propa_name2='taylor'               ! Optional secondary propagator
+  Beta=t P=f renorm= f               ! propagation options
+/
+**

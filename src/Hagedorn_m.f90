@@ -6,6 +6,7 @@ module Hagedorn_m
    USE Ana_psi_m
    USE polyortho_m
    USE sub_propa_m
+   USE HagedornOverlap_m
    implicit none
    PRIVATE
      !> Public interfaces for Hagedorn basis construction and projection operations
@@ -14,17 +15,20 @@ module Hagedorn_m
    
      !> Hagedorn propagation and testing routines
    PUBLIC :: Hagedorn                         ! Hagedorn routine
-   PUBLIC :: Test_Calc_S                      ! Test routine for computing matrix S
+   PUBLIC :: Test_Calc_S       ! Test routine for computing matrix S
    PUBLIC :: Test_projection_hagedorn         ! Test of projection method using Hagedorn basis
    
      !> Utility routines for basis construction and manipulation
    PUBLIC :: build_identity_matrix            ! Build identity matrix for trivial bases
-   PUBLIC :: build_overlap_matrices           ! Compute overlap matrices
+   PUBLIC :: build_overlap_matrices         ! Compute overlap matrices
    
      !> Hagedorn basis construction routines
    PUBLIC :: Construct_Hagedorn_none_Variational_Basis       ! Construct non-variational Hagedorn basis
    
+   PUBLIC :: Test_Compare_Overlap_ThreeMethods        ! Test routine for computing matrix S with three methods
+   
 CONTAINS
+
 
 subroutine build_identity_matrix(Id, n)
   implicit none
@@ -88,10 +92,13 @@ SUBROUTINE Construct_Hagedorn_none_Variational_Basis(Basis, Qt, SQt, At, Pt)
 
     IF (Basis%tab_basis(ib)%Basis_name == 'herm' .OR. &
         Basis%tab_basis(ib)%Basis_name == 'ho') THEN
-
-      CALL Calc_S(Basis%tab_basis(ib)%S, nb, nq, &
-                  Q0(ib), SQ0(ib), A0(ib), P0(ib), &
-                  Qt(ib), SQt(ib), At(ib), Pt(ib))
+      !Using algebric routine
+             call Calc_S_algebraic_genfunc(Basis%tab_basis(ib)%S, nb, Q0(ib), SQ0(ib), A0(ib), P0(ib), &
+                                           Qt(ib), SQt(ib), At(ib), Pt(ib))
+  
+      !CALL Calc_S(Basis%tab_basis(ib)%S, nb, nq, &
+      !            Q0(ib), SQ0(ib), A0(ib), P0(ib), &
+      !            Qt(ib), SQt(ib), At(ib), Pt(ib))
     ELSE
       CALL build_identity_matrix(Basis%tab_basis(ib)%S, nb)
     END IF
@@ -312,7 +319,9 @@ SUBROUTINE Test_Calc_S()
   !--------------------------------------------------------------
   ! Call Calc_S to compute the overlap matrix S
   !--------------------------------------------------------------
-  call Calc_S(S, nb, nq, Q0, SQ0, A0, P0, Qt, SQt, At, Pt)
+  !Using algebraic formula
+  call Calc_S_algebraic_genfunc(S, nb, Q0, SQ0, A0, P0, Qt, SQt, At, Pt)
+  !call Calc_S(S, nb, nq, Q0, SQ0, A0, P0, Qt, SQt, At, Pt)
     call  Write_VecMat(S, out_unit, nb,  info='S')
   !--------------------------------------------------------------
   ! End of test subroutine
@@ -320,6 +329,215 @@ SUBROUTINE Test_Calc_S()
   print*, 'Test_Calc_S finished.'
 
 END SUBROUTINE Test_Calc_S
+
+
+  subroutine Test_Compare_Overlap_ThreeMethods()
+
+    integer, parameter :: nb = 10
+
+    integer, parameter :: n_scenarios = 6
+
+    integer, parameter :: nq_values(4) = [10, 25, 50, 100]
+
+    real(kind=Rkind), parameter :: tol_exact = 1.0e-12_Rkind
+
+    real(kind=Rkind), parameter :: tol_num   = 1.0e-10_Rkind
+
+
+
+    type :: Scenario_t
+
+      real(kind=Rkind) :: Q0, SQ0, P0, Qt, SQt, Pt
+
+      complex(kind=Rkind) :: A0, At
+
+    end type Scenario_t
+
+
+
+    type(Scenario_t) :: scenarios(n_scenarios)
+
+    complex(kind=Rkind) :: Snum(nb,nb), Salg(nb,nb), Sbourq(nb,nb)
+
+    real(kind=Rkind) :: e_num_alg, e_num_bq, e_alg_bq
+
+    integer :: i, iq
+
+    logical :: all_ok
+
+
+
+   ! Scénario 1 (déjà cohérent)
+
+  scenarios(1) = Scenario_t(0.5_Rkind, 1.0_Rkind, 0.25_Rkind, &
+
+                            0.49_Rkind, 1.0_Rkind, 0.24_Rkind, &
+
+                            cmplx(1.0_Rkind, 0.1_Rkind, kind=Rkind), &
+
+                            cmplx(1.0_Rkind, 0.2_Rkind, kind=Rkind))
+
+
+
+! Scénario 2 : 
+
+  scenarios(2) = Scenario_t(0.3_Rkind, 1.0_Rkind, 0.1_Rkind, &
+
+                            0.35_Rkind, 1.0_Rkind, 0.12_Rkind, &
+
+                            cmplx(1.0_Rkind, 0.0_Rkind, kind=Rkind), &
+
+                            cmplx(1.0_Rkind, 0.0_Rkind, kind=Rkind))
+
+
+
+! Scénario 3 : 
+
+  scenarios(3) = Scenario_t(0.2_Rkind, sqrt(0.5_Rkind), 0.3_Rkind, &
+
+                            0.25_Rkind, sqrt(0.6_Rkind), 0.28_Rkind, &
+
+                            cmplx(0.5_Rkind, 2.0_Rkind, kind=Rkind), &
+
+                            cmplx(0.6_Rkind, 1.5_Rkind, kind=Rkind))
+
+
+
+! Scénario 4 (déjà cohérent)
+
+  scenarios(4) = Scenario_t(0.0_Rkind, 1.0_Rkind, 0.0_Rkind, &
+
+                            0.1_Rkind, 1.0_Rkind, 0.1_Rkind, &
+
+                            cmplx(1.0_Rkind, 0.0_Rkind, kind=Rkind), &
+
+                            cmplx(1.0_Rkind, 0.0_Rkind, kind=Rkind))
+
+
+
+! Scénario 5 (déjà cohérent)
+
+  scenarios(5) = Scenario_t(0.0_Rkind, 1.0_Rkind, 0.0_Rkind, &
+
+                            2.0_Rkind, 1.0_Rkind, 0.0_Rkind, &
+
+                            cmplx(1.0_Rkind, 0.0_Rkind, kind=Rkind), &
+
+                            cmplx(1.0_Rkind, 0.0_Rkind, kind=Rkind))
+
+
+
+! Scénario 6 : 
+
+  scenarios(6) = Scenario_t(0.7_Rkind, sqrt(0.8_Rkind), 0.4_Rkind, &
+
+                            0.6_Rkind, sqrt(0.9_Rkind), 0.35_Rkind, &
+
+                            cmplx(0.8_Rkind, 0.3_Rkind, kind=Rkind), &
+
+                            cmplx(0.9_Rkind, 0.4_Rkind, kind=Rkind))
+
+
+
+    write(out_unit,'(A)') ''
+
+    write(out_unit,'(A)') '=== Test de comparaison sur trois méthodes ==='
+
+    write(out_unit,'(A)') '1) Calc_S_numeric_realgrid  : quadrature reelle historique'
+
+    write(out_unit,'(A)') '2) Calc_S_algebraic_genfunc : formule algebrique exacte (fonction generatrice)'
+
+    write(out_unit,'(A)') '3) Calc_S_Bourquin522       : quadrature complexe exacte de type Bourquin 5.2.2'
+
+    write(out_unit,'(A,I0)') 'nb = ', nb
+
+    write(out_unit,'(A,4(I0,1X))') 'nq testes pour la methode numerique : ', nq_values
+
+    write(out_unit,'(A)') ''
+
+
+
+    all_ok = .true.
+
+    do i = 1, n_scenarios
+
+      call Calc_S_algebraic_genfunc(Salg, nb, scenarios(i)%Q0, scenarios(i)%SQ0, scenarios(i)%A0, scenarios(i)%P0, &
+
+                                         scenarios(i)%Qt, scenarios(i)%SQt, scenarios(i)%At, scenarios(i)%Pt)
+
+      call Calc_S_Bourquin522(Sbourq, nb, scenarios(i)%Q0, scenarios(i)%SQ0, scenarios(i)%A0, scenarios(i)%P0, &
+
+                                   scenarios(i)%Qt, scenarios(i)%SQt, scenarios(i)%At, scenarios(i)%Pt, nq_exact=nb)
+
+
+
+      e_alg_bq = maxabs_mat(Salg - Sbourq)
+
+      if (e_alg_bq > tol_exact) all_ok = .false.
+
+
+
+      write(out_unit,'(A,I0,A)') 'Scenario ', i, ' :'
+
+      write(out_unit,'(A,2(" (",F10.6,",",F10.6,")"))') '  A0 / At =', real(scenarios(i)%A0), aimag(scenarios(i)%A0), &
+
+                                                            real(scenarios(i)%At), aimag(scenarios(i)%At)
+
+      write(out_unit,'(A,3F12.6)') '  Q0, SQ0, P0 =', scenarios(i)%Q0, scenarios(i)%SQ0, scenarios(i)%P0
+
+      write(out_unit,'(A,3F12.6)') '  Qt, SQt, Pt =', scenarios(i)%Qt, scenarios(i)%SQt, scenarios(i)%Pt
+
+      write(out_unit,'(A,ES12.4)') '  ||S_alg - S_bourquin||_max = ', e_alg_bq
+
+      write(out_unit,'(A)') '  Convergence de la methode numerique reelle :'
+
+
+
+      do iq = 1, size(nq_values)
+
+        call Calc_S_numeric_realgrid(Snum, nb, nq_values(iq), scenarios(i)%Q0, scenarios(i)%SQ0, scenarios(i)%A0, scenarios(i)%P0, &
+
+                                               scenarios(i)%Qt, scenarios(i)%SQt, scenarios(i)%At, scenarios(i)%Pt)
+
+        e_num_alg = maxabs_mat(Snum - Salg)
+
+        e_num_bq  = maxabs_mat(Snum - Sbourq)
+
+        write(out_unit,'(A,I4,A,ES12.4,A,ES12.4)') '    nq =', nq_values(iq), '  |num-alg| =', e_num_alg, '  |num-bq| =', e_num_bq
+
+      end do
+
+      write(out_unit,'(A)') ''
+
+    end do
+
+
+
+    call Calc_S_numeric_realgrid(Snum, nb, 100, scenarios(6)%Q0, scenarios(6)%SQ0, scenarios(6)%A0, scenarios(6)%P0, &
+
+                                           scenarios(6)%Qt, scenarios(6)%SQt, scenarios(6)%At, scenarios(6)%Pt)
+
+    e_num_alg = maxabs_mat(Snum - Salg)
+
+    if (e_num_alg > tol_num) all_ok = .false.
+
+
+
+    if (all_ok) then
+
+      write(out_unit,'(A)') 'RESULTAT GLOBAL : OK - les deux methodes exactes coincident au bruit machine,'
+
+      write(out_unit,'(A)') 'et la methode numerique reelle converge vers elles quand nq augmente.'
+
+    else
+
+      write(out_unit,'(A)') 'RESULTAT GLOBAL : ECHEC - verifier les conventions de phase ou les parametrisations.'
+
+      error stop 'Test_Compare_Overlap_ThreeMethods failed.'
+
+    end if
+
+  end subroutine Test_Compare_Overlap_ThreeMethods
 
 
 subroutine build_overlap_matrices(B1, B2)
@@ -362,7 +580,9 @@ subroutine build_overlap_matrices(B1, B2)
      print*, 'nb,nq', nb,nq 
      ! Build S according to the basis type
      if (trim(bname) == 'hag' .or. trim(bname) == 'ho') then
-        call Calc_S(B1%tab_basis(ib)%S, nb, nq, Q0, SQ0, A0, P0, Qt, SQt, At, Pt)
+          !Using algebric formula
+        call Calc_S_algebraic_genfunc(B1%tab_basis(ib)%S, nb, Q0, SQ0, A0, P0, Qt, SQt, At, Pt)
+        !call Calc_S(B1%tab_basis(ib)%S, nb, nq, Q0, SQ0, A0, P0, Qt, SQt, At, Pt)
      else
         call build_identity_matrix(B1%tab_basis(ib)%S, nb)
      end if
@@ -418,8 +638,8 @@ subroutine Test_projection_hagedorn(Basis,psi)
   call Calc_tab_Iq0(Tab_Iq1,B1)
   call Calc_tab_Iq0(Tab_Iq2,B2)
 
-  call Set_Op(H1, B1,Tab_Iq1)
-  call Set_Op(H2, B2,Tab_Iq2)
+  call Set_Op(H1, B1,Tab_Iq1,nio=in_unit)
+  call Set_Op(H2, B2,Tab_Iq2,nio=in_unit)
 
   ! Initialize psi2 with B2 and psi1 with B1
   call init_psi(psi2, B2, cplx=.true., grid=.false.)
@@ -554,7 +774,7 @@ end subroutine test_projection_hagedorn
  
  END SUBROUTINE Hagedorn
 
- SUBROUTINE march_Global(psi, psi_dt, t, propa, H)
+ SUBROUTINE march_Global(psi, psi_dt, t, propa, H, u_Norm_13, u_E_13)
   IMPLICIT NONE
 
   ! Input/output arguments
@@ -563,6 +783,7 @@ end subroutine test_projection_hagedorn
   TYPE(psi_t),    INTENT(INOUT) :: psi_dt    ! Temporary wavefunction (used for propagation)
   REAL(kind=Rkind), INTENT(IN)  :: t         ! Current time
   TYPE(Op_t),     INTENT(INOUT) :: H         ! Hamiltonian operator (includes potential, kinetic, etc.)
+  INTEGER,        INTENT(IN)    :: u_Norm_13, u_E_13 ! Automatically allocated output units
 
   ! Local variables
   COMPLEX(kind=Rkind), ALLOCATABLE :: At(:)      ! Complex width parameters for each degree of freedom
@@ -630,17 +851,17 @@ end subroutine test_projection_hagedorn
      CALL Hagedorn(psi, psi_dt, propa,use_psi0_params=.FALSE.)
 
      ! Step 4: Reconstruct operator H with new basis
-     DEALLOCATE(H%Scal_pot)
+     IF (ALLOCATED(H%Scal_pot)) DEALLOCATE(H%Scal_pot)
      CALL Calc_tab_Iq(Tab_iq, psi%Basis)
-     CALL Set_Op(H, psi%Basis, Tab_iq)
+     CALL Set_Op(H, psi%Basis, Tab_iq,nio=in_unit)
 
      ! Step 5: Recalculate energy and norm for final psi
      CALL Calc_Av_E(E, psi, H)
      CALL Calc_Norm_OF_psi(psi, norm)
 
      ! Step 6: Output energy and norm differences for diagnostics
-     WRITE(25,*) t, ABS(E0 - E), E0, E
-     WRITE(24,*) t, ABS(Norm0 - norm), Norm0, norm
+     WRITE(u_E_13,*) t, ABS(E0 - E), E0, E
+     WRITE(u_Norm_13,*) t, ABS(Norm0 - norm), Norm0, norm
      FLUSH(out_unit)
   ELSE
      ! Default propagation: simple time step without Hagedorn basis
@@ -657,7 +878,7 @@ end subroutine test_projection_hagedorn
      name = propa%propa_name2 
      CALL string_uppercase_TO_lowercase(name)
      IF (name=='vp')THEN
-       CALL Set_Op(H, psi_dt%Basis, Tab_Iq,alloc=.FALSE.)
+       CALL Set_Op(H, psi_dt%Basis, Tab_Iq,alloc=.FALSE.,nio=in_unit)
       CALL init_psi(psi,psi_dt%Basis,cplx=.TRUE.,grid=.FALSE.)
      END IF 
      psi%CVec(:) = psi_dt%CVec(:)

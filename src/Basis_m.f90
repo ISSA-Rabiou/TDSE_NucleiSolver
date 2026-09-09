@@ -2,6 +2,7 @@ MODULE Basis_m
    USE QDUtil_m
    USE NDindex_m
    USE polyortho_m
+   USE SmolyakSparseGridMetadata_m
 
    IMPLICIT NONE
 
@@ -29,8 +30,10 @@ MODULE Basis_m
    PUBLIC :: pdv2psi_nD
    
    PUBLIC :: Get_Basis_Parameters, Change_Basis_Parameters
+   PUBLIC :: Basis_UsesSmolyakSparseGrid, Get_TotalBasisCoefficientCount
    
    PUBLIC :: Calc_reduced_Density_surf, Calc_reduced_density
+   PUBLIC :: FinalizeSparseGridRepresentation
    PUBLIC :: REDUCED_DENSIRY_t
    PUBLIC :: calc_tab_Iq0 ,Complete_construct_Basis
    PUBLIC :: Print_Grids, Build_NUFT_Grids, Test_NUFFT_Cycle
@@ -73,6 +76,15 @@ MODULE Basis_m
    REAL(KIND=Rkind)                    :: scaleQ, Q0
    COMPLEX(KIND=Rkind)                 :: Alpha = CONE
    CHARACTER(LEN=:), ALLOCATABLE       :: Basis_name
+   INTEGER                             :: representation_layout = BASIS_LAYOUT_DIRECT_PRODUCT
+   ! Smolyak levels: LB controls basis blocks, LG controls grid blocks.
+   INTEGER                             :: LB = 0
+   INTEGER                             :: LG = 0
+   INTEGER                             :: smolyak_rule_shift_B = 0
+   INTEGER                             :: smolyak_rule_slope_B = 0
+   INTEGER                             :: smolyak_rule_shift_G = 0
+   INTEGER                             :: smolyak_rule_slope_G = 0
+   TYPE(SmolyakSparseGridDescriptor_t) :: SmolyakSparseGrid
    !<--- Grid points and weights
    REAL(KIND=Rkind),    ALLOCATABLE    :: x(:)      ! Grid points
    REAL(KIND=Rkind),    ALLOCATABLE    :: w(:)      ! Quadrature weights
@@ -270,7 +282,14 @@ CONTAINS
         call Deallocate_Basis(Basis2)
         Basis2%Basis_name  = Basis1%Basis_name
         Basis2%nb_basis    = Basis1%nb_basis
-        allocate(Basis2%tab_basis(Basis2%nb_basis))
+        Basis2%representation_layout = Basis1%representation_layout
+        Basis2%LB = Basis1%LB
+        Basis2%LG = Basis1%LG
+         Basis2%smolyak_rule_shift_B = Basis1%smolyak_rule_shift_B
+         Basis2%smolyak_rule_slope_B = Basis1%smolyak_rule_slope_B
+         Basis2%smolyak_rule_shift_G = Basis1%smolyak_rule_shift_G
+         Basis2%smolyak_rule_slope_G = Basis1%smolyak_rule_slope_G
+         allocate(Basis2%tab_basis(Basis2%nb_basis))
      
         DO ib = 1, Basis1%nb_basis
            call init_Basis1_TO_Basis2(Basis2%tab_basis(ib), Basis1%tab_basis(ib))
@@ -298,7 +317,14 @@ CONTAINS
         Basis2%A           = Basis1%A
         Basis2%B           = Basis1%B
         Basis2%S           = Basis1%S
-     END IF
+        Basis2%representation_layout = Basis1%representation_layout
+        Basis2%LB = Basis1%LB
+        Basis2%LG = Basis1%LG
+         Basis2%smolyak_rule_shift_B = Basis1%smolyak_rule_shift_B
+         Basis2%smolyak_rule_slope_B = Basis1%smolyak_rule_slope_B
+         Basis2%smolyak_rule_shift_G = Basis1%smolyak_rule_shift_G
+         Basis2%smolyak_rule_slope_G = Basis1%smolyak_rule_slope_G
+      END IF
      
      END SUBROUTINE init_Basis1_TO_Basis2
 
@@ -319,6 +345,14 @@ CONTAINS
       FLUSH(out_unit)
    END IF
    
+   CALL DestroySmolyakSparseGridDescriptor(Basis%SmolyakSparseGrid)
+   Basis%representation_layout = BASIS_LAYOUT_DIRECT_PRODUCT
+   Basis%LB = 0
+   Basis%LG = 0
+   Basis%smolyak_rule_shift_B = 0
+   Basis%smolyak_rule_slope_B = 0
+   Basis%smolyak_rule_shift_G = 0
+   Basis%smolyak_rule_slope_G = 0
 
    IF(Basis%Basis_name == 'el') THEN
       IF(debug) WRITE(out_unit,*) 'Basis_name=el'
@@ -326,12 +360,17 @@ CONTAINS
       RETURN
    END IF
    
-   ! Deallocate ND indexing arrays if present
-   IF (allocated(Basis%tab_basis)) THEN
-      IF (ALLOCATED(Basis%NDindexq%Tab0)) DEALLOCATE(Basis%NDindexq%Tab0)
-      IF (ALLOCATED(Basis%NDindexb%Tab0)) DEALLOCATE(Basis%NDindexb%Tab0)
+   ! Deallocate composite basis recursively before releasing the container
+   IF (ALLOCATED(Basis%tab_basis)) THEN
+      DO i = 1, SIZE(Basis%tab_basis)
+         CALL Deallocate_Basis(Basis%tab_basis(i))
+      END DO
       DEALLOCATE(Basis%tab_basis)
    END IF
+
+   ! Deallocate ND indexing arrays if present
+   IF (ALLOCATED(Basis%NDindexq%Tab0)) DEALLOCATE(Basis%NDindexq%Tab0)
+   IF (ALLOCATED(Basis%NDindexb%Tab0)) DEALLOCATE(Basis%NDindexb%Tab0)
    
    ! Deallocate 1D basis arrays if present
    IF (ALLOCATED(Basis%x)) THEN
@@ -369,12 +408,6 @@ CONTAINS
       IF(debug) WRITE(out_unit,*) 'Basis table d2gg is now deallocated.'
    END IF
    
-   ! Recursively deallocate sub-basis if composite
-   IF (ALLOCATED(Basis%tab_basis)) THEN
-      DO i = 1, size(Basis%tab_basis)
-         CALL Deallocate_Basis(Basis%tab_basis(i))
-      END DO
-   END IF
 
    IF(debug) THEN
       WRITE(out_unit,*) 'END Deallocate_Basis'
@@ -416,18 +449,20 @@ CONTAINS
 !=======================================================================
    RECURSIVE SUBROUTINE Read_Basis(Basis, nio)
    USE QDUtil_m
-   LOGICAL, PARAMETER                  :: debug = .TRUE.
+   LOGICAL, PARAMETER                  :: debug = .FALSE.
    TYPE(Basis_t), INTENT(INOUT)        :: Basis
    INTEGER, INTENT(IN)                 :: nio
 
    ! Local variables
    INTEGER                              :: err_io, nb, nq, i, nb_basis, ib
    CHARACTER(LEN=Name_len)              :: name
+   INTEGER                              :: LB, LG, A_b_smol, B_b_smol, A_g_smol, B_g_smol
+   CHARACTER(LEN=Name_len)              :: normalized_name
    REAL(KIND=Rkind)                     :: A, B, scaleQ, Q0, Imp_k
    COMPLEX(KIND=Rkind)                  :: Alpha
 
    ! Namelist declaration
-   NAMELIST /basis_nD/ name, nb_basis, nb, nq, A, B, scaleQ, Q0, Imp_k, Alpha
+   NAMELIST /basis_nD/ name, nb_basis, nb, nq, A, B, scaleQ, Q0, Imp_k, Alpha, LB, LG, A_b_smol, B_b_smol, A_g_smol, B_g_smol
 
    ! ===== Default values =====
    nb_basis = 0
@@ -440,6 +475,12 @@ CONTAINS
    name     = '0'
    Imp_k    = ZERO
    Alpha    = CONE
+   LB       = 0
+   LG       = 0
+   A_b_smol = 0
+   B_b_smol = 0
+   A_g_smol = 0
+   B_g_smol = 0
 
    ! ===== Read namelist =====
    READ (nio, NML=basis_nD, IOSTAT=err_io)
@@ -457,6 +498,12 @@ CONTAINS
       WRITE(out_unit,'(A20,": ",ES30.15)')  'Imp_k',      Imp_k
       WRITE(out_unit,'(A20,": ",ES30.15)')  'Alpha (real)', REAL(Alpha)
       WRITE(out_unit,'(A20,": ",ES30.15)')  'Alpha (imag)', AIMAG(Alpha)
+      WRITE(out_unit,'(A20,": ",I5)')       'LB',         LB
+      WRITE(out_unit,'(A20,": ",I5)')       'LG',         LG
+      WRITE(out_unit,'(A20,": ",I5)')       'A_b_smol',   A_b_smol
+      WRITE(out_unit,'(A20,": ",I5)')       'B_b_smol',   B_b_smol
+      WRITE(out_unit,'(A20,": ",I5)')       'A_g_smol',   A_g_smol
+      WRITE(out_unit,'(A20,": ",I5)')       'B_g_smol',   B_g_smol
       WRITE(out_unit,*)  ! empty line for spacing
    END IF
 
@@ -470,17 +517,55 @@ CONTAINS
    END IF
 
    ! ===== Composite basis case =====
+   normalized_name = TRIM(ADJUSTL(name))
+   CALL string_uppercase_TO_lowercase(normalized_name)
+
    IF (nb_basis > 1) THEN
-      Basis%Basis_name = 'Dp'
+      Basis%Basis_name = TRIM(normalized_name)
       Basis%nb_basis   = nb_basis
-      CALL string_uppercase_TO_lowercase(Basis%Basis_name)
+      Basis%LB = LB
+      Basis%LG = LG
+      Basis%A = A
+      Basis%B = B
+      ! Backward-compatible input: when LG is omitted, use LB for the grid.
+      IF (Basis%LG <= 0) Basis%LG = Basis%LB
+      SELECT CASE (TRIM(normalized_name))
+      CASE ('smolyak', 'smoly')
+         Basis%representation_layout = BASIS_LAYOUT_SMOLYAK_SPARSE
+      CASE DEFAULT
+         Basis%representation_layout = BASIS_LAYOUT_DIRECT_PRODUCT
+         Basis%Basis_name = 'dp'
+      END SELECT
 
       ALLOCATE (Basis%tab_basis(nb_basis))
       DO i = 1, nb_basis
          CALL Read_Basis(Basis%tab_basis(i), nio)
+
+         ! The Smolyak controls belong to the composite definition, but the
+         ! cap rule is evaluated independently in every nuclear dimension.
+         ! Therefore propagate composite values to a primitive only when that
+         ! primitive did not provide an explicit value of its own.
+         IF (TRIM(normalized_name) == 'smolyak' .AND. &
+             Basis%tab_basis(i)%Basis_name /= 'el') THEN
+            IF (Basis%tab_basis(i)%smolyak_rule_shift_B <= 0) &
+                 Basis%tab_basis(i)%smolyak_rule_shift_B = A_b_smol
+            IF (Basis%tab_basis(i)%smolyak_rule_slope_B <= 0) &
+                 Basis%tab_basis(i)%smolyak_rule_slope_B = B_b_smol
+            IF (Basis%tab_basis(i)%smolyak_rule_shift_G <= 0) &
+                 Basis%tab_basis(i)%smolyak_rule_shift_G = A_g_smol
+            IF (Basis%tab_basis(i)%smolyak_rule_slope_G <= 0) &
+                 Basis%tab_basis(i)%smolyak_rule_slope_G = B_g_smol
+         END IF
       END DO
 
-      ! Compute total nb and nq excluding "el" bases
+      ! Keep the composite values available as well, notably for copies of
+      ! the basis made by the propagation and validation code.
+      Basis%smolyak_rule_shift_B = A_b_smol
+      Basis%smolyak_rule_slope_B = B_b_smol
+      Basis%smolyak_rule_shift_G = A_g_smol
+      Basis%smolyak_rule_slope_G = B_g_smol
+
+      ! Compute total nuclear nb and nq excluding electronic basis blocks.
       Basis%nb = 1
       Basis%nq = 1
       DO i = 1, nb_basis
@@ -501,6 +586,11 @@ CONTAINS
       Basis%Imp_k      = Imp_k
       Basis%Alpha      = Alpha
       Basis%Basis_name = TRIM(ADJUSTL(name))
+      Basis%representation_layout = BASIS_LAYOUT_DIRECT_PRODUCT
+      Basis%smolyak_rule_shift_B = A_b_smol
+      Basis%smolyak_rule_slope_B = B_b_smol
+      Basis%smolyak_rule_shift_G = A_g_smol
+      Basis%smolyak_rule_slope_G = B_g_smol
 
       ! Initialize overlap matrix S as identity
       ALLOCATE (Basis%S(nb, nb))
@@ -566,8 +656,8 @@ END SUBROUTINE Read_Basis
    IMPLICIT NONE
 
    !==================== Parameters =====================
-   LOGICAL, PARAMETER :: debug = .true.
-   !LOGICAL, PARAMETER :: debug = .false.  ! Uncomment to disable debug mode
+   !LOGICAL, PARAMETER :: debug = .true.
+   LOGICAL, PARAMETER :: debug = .false.  ! Uncomment to disable debug mode
 
    !==================== Interface ======================
    TYPE(Basis_t), INTENT(INOUT) :: Basis   ! Basis structure to construct
@@ -655,6 +745,7 @@ END SUBROUTINE construct_primitive_basis_temp
        call Init_NDindex(Basis%NDindexb, NDend_b, ndim)
 
        call construct_primitive_basis_temp(Basis)
+       call FinalizeSparseGridRepresentation(Basis)
 
        IF (debug) THEN
           write (out_unit, *) 'End construct_primitive_basis'
@@ -662,6 +753,129 @@ END SUBROUTINE construct_primitive_basis_temp
 
         
    END SUBROUTINE 
+
+
+   LOGICAL FUNCTION Basis_UsesSmolyakSparseGrid(Basis)
+
+      TYPE(Basis_t), INTENT(IN) :: Basis
+
+      Basis_UsesSmolyakSparseGrid = Basis%representation_layout == BASIS_LAYOUT_SMOLYAK_SPARSE .AND. Basis%SmolyakSparseGrid%is_initialized
+
+   END FUNCTION Basis_UsesSmolyakSparseGrid
+
+
+
+   INTEGER FUNCTION Get_TotalBasisCoefficientCount(Basis) RESULT(ncoeff)
+
+      TYPE(Basis_t), INTENT(IN) :: Basis
+
+      INTEGER :: ndim, nsurf
+
+      IF (Basis_UsesSmolyakSparseGrid(Basis)) THEN
+
+         ncoeff = GetEffectiveTotalBasisSize(Basis%SmolyakSparseGrid)
+
+      ELSE
+
+         IF (ALLOCATED(Basis%tab_basis)) THEN
+
+            ndim = SIZE(Basis%tab_basis) - 1
+
+            IF (ndim >= 1) THEN
+
+               nsurf = Basis%tab_basis(ndim+1)%nb
+
+            ELSE
+
+               nsurf = 1
+
+           END IF
+
+         ELSE
+
+            nsurf = 1
+
+         END IF
+
+         ncoeff = Basis%nb * nsurf
+
+      END IF
+
+   END FUNCTION Get_TotalBasisCoefficientCount
+
+
+
+   SUBROUTINE FinalizeSparseGridRepresentation(Basis)
+
+      TYPE(Basis_t), INTENT(INOUT) :: Basis
+
+      INTEGER :: ndim, nsurf, ib
+
+      INTEGER, ALLOCATABLE :: rule_shift(:), rule_slope(:), rule_shift_g(:), rule_slope_g(:), nuclear_nb(:), nuclear_nq(:), ndend_q(:), ndend_b(:)
+
+      TYPE(NDindex_t) :: NuclearGridIndex, NuclearBasisIndex
+
+
+
+      IF (.NOT. ALLOCATED(Basis%tab_basis)) RETURN
+
+      IF (Basis%representation_layout /= BASIS_LAYOUT_SMOLYAK_SPARSE) RETURN
+
+
+
+      ndim = SIZE(Basis%tab_basis) - 1
+
+      IF (ndim < 1) RETURN
+
+      nsurf = Basis%tab_basis(ndim+1)%nb
+
+
+      ALLOCATE(rule_shift(ndim), rule_slope(ndim), rule_shift_g(ndim), rule_slope_g(ndim), &
+               nuclear_nb(ndim), nuclear_nq(ndim), ndend_q(ndim), ndend_b(ndim))
+
+      DO ib = 1, ndim
+
+         rule_shift(ib) = Basis%tab_basis(ib)%smolyak_rule_shift_B
+         rule_slope(ib) = Basis%tab_basis(ib)%smolyak_rule_slope_B
+
+        IF (rule_shift(ib) <= 0) rule_shift(ib) = 1
+
+         IF (rule_slope(ib) <= 0) rule_slope(ib) = 1
+         rule_shift_g(ib) = Basis%tab_basis(ib)%smolyak_rule_shift_G
+         rule_slope_g(ib) = Basis%tab_basis(ib)%smolyak_rule_slope_G
+         IF (rule_shift_g(ib) <= 0) rule_shift_g(ib) = 1
+         IF (rule_slope_g(ib) <= 0) rule_slope_g(ib) = 1
+
+         nuclear_nb(ib) = Basis%tab_basis(ib)%nb
+
+        nuclear_nq(ib) = Basis%tab_basis(ib)%nq
+
+         ndend_b(ib)    = Basis%tab_basis(ib)%nb
+
+         ndend_q(ib)    = Basis%tab_basis(ib)%nq
+
+      END DO
+
+
+
+     CALL Init_NDindex(NuclearGridIndex, ndend_q, ndim)
+
+     CALL Init_NDindex(NuclearBasisIndex, ndend_b, ndim)
+
+      CALL InitializeSmolyakSparseGridDescriptor(Basis%SmolyakSparseGrid, ndim, nsurf, Basis%LB, Basis%LG,&
+      & rule_shift, rule_slope, rule_shift_g, rule_slope_g, NuclearBasisIndex, NuclearGridIndex, nuclear_nb, nuclear_nq, Basis%nb, Basis%nq)
+
+
+
+     IF (ALLOCATED(NuclearGridIndex%Tab0)) DEALLOCATE(NuclearGridIndex%Tab0)
+
+      IF (ALLOCATED(NuclearBasisIndex%Tab0)) DEALLOCATE(NuclearBasisIndex%Tab0)
+
+     DEALLOCATE(rule_shift, rule_slope, nuclear_nb, nuclear_nq, ndend_q, ndend_b)
+
+   END SUBROUTINE FinalizeSparseGridRepresentation
+
+
 
     SUBROUTINE Construct_Basis_Sin(Basis) ! sin : boxAB with A=0 and B=pi
       USE QDUtil_m
@@ -1169,7 +1383,7 @@ END SUBROUTINE CheckOrtho_Basis
       !--------------------------------------------------------------
       call Calc_tranpose_d0gb(Basis)
       !--------------------------------------------------------------
-      call Calc_dngg_grid(Basis,.TRUE.)
+      call Calc_dngg_grid(Basis, debug)
       !--------------------------------------------------------------
       ! Check orthonormality of the constructed basis up to 2nd derivative
       !--------------------------------------------------------------
@@ -1240,7 +1454,7 @@ END SUBROUTINE CheckOrtho_Basis
       LOGICAL, OPTIONAL, INTENT(IN) :: analytic_d1bb
       INTEGER :: nb, nq, ib, m, n
       LOGICAL :: use_analytic
-      LOGICAL, PARAMETER :: debug = .TRUE.
+      LOGICAL, PARAMETER :: debug = .FALSE.
       REAL(kind=Rkind) :: a, b, p, q0
       CHARACTER(len=Name_len) :: name
     
@@ -1397,13 +1611,14 @@ END SUBROUTINE CheckOrtho_Basis
          FLUSH(out_unit)
       END IF
 
-      ALLOCATE (B(Basis%nb*Basis%tab_basis(ndim)%nb))
+      ALLOCATE (B(Get_TotalBasisCoefficientCount(Basis)))
       ALLOCATE (G1(Basis%nq*Basis%tab_basis(ndim)%nb))
       ALLOCATE (diff_g(Basis%nq*Basis%tab_basis(ndim)%nb))
-      ALLOCATE (diff_b(Basis%nb*Basis%tab_basis(ndim)%nb))
+      ALLOCATE (diff_b(Get_TotalBasisCoefficientCount(Basis)))
+
       ALLOCATE (G2(Basis%nq*Basis%tab_basis(ndim)%nb))
-      ALLOCATE (B1(Basis%nb*Basis%tab_basis(ndim)%nb))
-      ALLOCATE (B2(Basis%nb*Basis%tab_basis(ndim)%nb))
+      ALLOCATE (B1(Get_TotalBasisCoefficientCount(Basis)))
+      ALLOCATE (B2(Get_TotalBasisCoefficientCount(Basis)))
 
       B(:) = CZERO
       B1(:) = CONE
@@ -1605,7 +1820,9 @@ END SUBROUTINE CheckOrtho_Basis
 
 END SUBROUTINE Calc_index
 
-SUBROUTINE BasisTOGrid_nD_cplx(G, B, Basis)
+
+
+SUBROUTINE BasisTOGrid_nD_cplx_dense(G, B, Basis)
    IMPLICIT NONE
 
    ! Input/Output arguments
@@ -1741,7 +1958,7 @@ SUBROUTINE BasisTOGrid_nD_cplx(G, B, Basis)
 
 END SUBROUTINE
 
-SUBROUTINE GridTOBasis_nD_cplx(B, G, Basis)
+SUBROUTINE GridTOBasis_nD_cplx_dense(B, G, Basis)
    USE QDUtil_m
    !Input/Output arguments
    TYPE(Basis_t), intent(in), target                :: Basis
@@ -1856,6 +2073,111 @@ SUBROUTINE GridTOBasis_nD_cplx(B, G, Basis)
    END IF
 END SUBROUTINE
 
+ SUBROUTINE BasisTOGrid_nD_cplx_smolyak(G, B, Basis)
+   USE QDUtil_m, ONLY: Rkind, CZERO
+   TYPE(Basis_t), INTENT(IN) :: Basis
+   COMPLEX(KIND=Rkind), INTENT(IN) :: B(:)
+   COMPLEX(KIND=Rkind), INTENT(INOUT) :: G(:)
+   COMPLEX(KIND=Rkind), ALLOCATABLE :: FullB(:)
+   INTEGER :: nfull
+   nfull=Basis%nb*Basis%tab_basis(SIZE(Basis%tab_basis))%nb
+   IF (SIZE(B) /= GetSmolyakPackedBasisSize(Basis%SmolyakSparseGrid)) &
+      STOP 'BasisTOGrid_nD_cplx_smolyak: wrong sparse size'
+   IF (SIZE(G) /= Basis%nq*Basis%tab_basis(SIZE(Basis%tab_basis))%nb) &
+      STOP 'BasisTOGrid_nD_cplx_smolyak: wrong grid size'
+   ALLOCATE(FullB(nfull))
+   CALL ExpandSparseBasisToFullBasis(FullB,B,Basis%SmolyakSparseGrid)
+   CALL BasisTOGrid_nD_cplx_dense(G,FullB,Basis)
+   DEALLOCATE(FullB)
+ END SUBROUTINE BasisTOGrid_nD_cplx_smolyak
+
+ SUBROUTINE GridTOBasis_nD_cplx_smolyak(B, G, Basis)
+   USE QDUtil_m, ONLY: Rkind
+   TYPE(Basis_t), INTENT(IN) :: Basis
+   COMPLEX(KIND=Rkind), INTENT(IN) :: G(:)
+   COMPLEX(KIND=Rkind), INTENT(INOUT) :: B(:)
+   COMPLEX(KIND=Rkind), ALLOCATABLE :: FullB(:)
+   INTEGER :: nfull
+   nfull=Basis%nb*Basis%tab_basis(SIZE(Basis%tab_basis))%nb
+   IF (SIZE(B) /= GetSmolyakPackedBasisSize(Basis%SmolyakSparseGrid)) &
+      STOP 'GridTOBasis_nD_cplx_smolyak: wrong sparse size'
+   IF (SIZE(G) /= Basis%nq*Basis%tab_basis(SIZE(Basis%tab_basis))%nb) &
+      STOP 'GridTOBasis_nD_cplx_smolyak: wrong grid size'
+   ALLOCATE(FullB(nfull))
+   CALL GridTOBasis_nD_cplx_dense(FullB,G,Basis)
+   CALL RestrictFullBasisToSparseBasis(B,FullB,Basis%SmolyakSparseGrid)
+   DEALLOCATE(FullB)
+ END SUBROUTINE GridTOBasis_nD_cplx_smolyak
+
+ SUBROUTINE decode_block_index(linear, caps, idx)
+   INTEGER, INTENT(IN) :: linear, caps(:)
+   INTEGER, INTENT(OUT) :: idx(:)
+   INTEGER :: r,j
+   r=linear-1
+   DO j=1,SIZE(caps); idx(j)=MOD(r,caps(j))+1; r=r/caps(j); END DO
+ END SUBROUTINE decode_block_index
+
+ SUBROUTINE BasisTOGrid_nD_cplx(G, B, Basis)
+
+   COMPLEX(KIND=Rkind), INTENT(INOUT) :: G(:)
+
+   COMPLEX(KIND=Rkind), INTENT(IN)    :: B(:)
+
+   TYPE(Basis_t),       INTENT(IN), TARGET :: Basis
+
+   COMPLEX(KIND=Rkind), ALLOCATABLE :: FullBasisVector(:)
+
+   INTEGER :: DenseBasisSize
+
+
+
+   IF (Basis_UsesSmolyakSparseGrid(Basis) .AND. SIZE(B) == GetSmolyakPackedBasisSize(Basis%SmolyakSparseGrid)) THEN
+
+      DenseBasisSize = Basis%nb * Basis%tab_basis(SIZE(Basis%tab_basis))%nb
+      ALLOCATE(FullBasisVector(DenseBasisSize))
+      CALL ExpandSparseBasisToFullBasis(FullBasisVector, B, Basis%SmolyakSparseGrid)
+      CALL BasisTOGrid_nD_cplx_dense(G, FullBasisVector, Basis)
+      DEALLOCATE(FullBasisVector)
+
+   ELSE
+
+      CALL BasisTOGrid_nD_cplx_dense(G, B, Basis)
+
+   END IF
+
+END SUBROUTINE BasisTOGrid_nD_cplx
+
+
+SUBROUTINE GridTOBasis_nD_cplx(B, G, Basis)
+
+   COMPLEX(KIND=Rkind), INTENT(INOUT) :: B(:)
+
+   COMPLEX(KIND=Rkind), INTENT(IN)    :: G(:)
+
+   TYPE(Basis_t),       INTENT(IN), TARGET :: Basis
+
+   COMPLEX(KIND=Rkind), ALLOCATABLE :: FullBasisVector(:)
+
+   INTEGER :: DenseBasisSize
+
+
+   IF (Basis_UsesSmolyakSparseGrid(Basis) .AND. SIZE(B) == GetSmolyakPackedBasisSize(Basis%SmolyakSparseGrid)) THEN
+
+      DenseBasisSize = Basis%nb * Basis%tab_basis(SIZE(Basis%tab_basis))%nb
+      ALLOCATE(FullBasisVector(DenseBasisSize))
+      CALL GridTOBasis_nD_cplx_dense(FullBasisVector, G, Basis)
+      CALL RestrictFullBasisToSparseBasis(B, FullBasisVector, Basis%SmolyakSparseGrid)
+      DEALLOCATE(FullBasisVector)
+
+   ELSE
+
+      CALL GridTOBasis_nD_cplx_dense(B, G, Basis)
+
+   END IF
+
+END SUBROUTINE GridTOBasis_nD_cplx
+
+
 SUBROUTINE Calc_Q_grid(Q, Basis)
    IMPLICIT NONE
 
@@ -1871,7 +2193,9 @@ SUBROUTINE Calc_Q_grid(Q, Basis)
    ! Determine the number of dimensions excluding the electronic basis
    ndim = SIZE(Basis%tab_basis) - 1
 
-   ! Allocate output array Q and index array Tab_iq
+   ! Allocate output array Q and index array Tab_iq.
+   ! Q is reused by the direct curvilinear kernels.
+   IF (ALLOCATED(Q)) DEALLOCATE(Q)
    ALLOCATE(Q(Basis%nq, ndim), Tab_iq(ndim))
 
    ! Initialize the index array for multidimensional looping

@@ -6,10 +6,250 @@
      public:: poly_Hermite_exp,d0d1d2poly_Hermite_exp,poly_Hermite
      public:: hercom,herroot,herrec,d0d1d2box,d0d1d2fourier
      public:: d0d1d2poly_Hag_exp
+     public :: poly_hermite_c, poly_hermite_r
+     public :: hermgauss_standard, hermgauss_plain,basis_value_legacy
     
 
 
     contains
+
+      subroutine basis_value_legacy(x, q, alpha, p, ib, phi)
+
+    real(kind=Rkind), intent(in) :: x, q, p
+
+    complex(kind=Rkind), intent(in) :: alpha
+
+    integer, intent(in) :: ib
+
+    complex(kind=Rkind), intent(out) :: phi
+
+    real(kind=Rkind) :: sq, bt, dq
+
+    complex(kind=Rkind) :: w
+
+    sq = sqrt(real(alpha,kind=Rkind))
+
+    bt = aimag(alpha)
+
+    dq = sq * (x - q)
+
+    w  = exp(-HALF*EYE*bt*(x-q)**2 + EYE*p*(x-q))
+
+    phi = sqrt(sq) * poly_hermite_r(dq, ib) * exp(-HALF*dq*dq) * w
+
+  end subroutine basis_value_legacy
+
+
+
+    pure complex(kind=Rkind) function poly_hermite_c(x,l) result(val)
+
+    complex(kind=Rkind), intent(in) :: x
+
+    integer, intent(in) :: l
+
+    complex(kind=Rkind) :: pl0, pl1, pl2
+
+    real(kind=Rkind) :: norme
+
+    integer :: i
+
+    if (l < 0) error stop 'poly_hermite_c: l < 0'
+
+    norme = sqrt(PI)
+
+    if (l == 0) then
+
+      val = ONE / sqrt(norme)
+
+    else if (l == 1) then
+
+      norme = norme * TWO
+
+      val = TWO*x / sqrt(norme)
+
+    else
+
+      pl2 = CONE
+
+      pl1 = TWO*x
+
+      norme = norme * TWO
+
+      do i = 2, l
+
+        norme = norme * TWO * real(i, kind=Rkind)
+
+        pl0 = TWO * (x*pl1 - real(i-1, kind=Rkind)*pl2)
+
+        pl2 = pl1
+
+        pl1 = pl0
+
+      end do
+
+      val = pl0 / sqrt(norme)
+
+    end if
+
+  end function poly_hermite_c
+
+  pure complex(kind=Rkind) function poly_hermite_r(x,l) result(val)
+
+    real(kind=Rkind), intent(in) :: x
+
+    integer, intent(in) :: l
+
+    val = poly_hermite_c(cmplx(x,ZERO,kind=Rkind), l)
+
+  end function poly_hermite_r
+
+  subroutine herrec(p2, dp2, p1, x, nq)
+
+    integer, intent(in) :: nq
+
+    real(kind=Rkind), intent(in) :: x
+
+    real(kind=Rkind), intent(out) :: p2, dp2, p1
+
+    real(kind=Rkind) :: p0, dp0, dp1
+
+    integer :: i
+
+    p1  = ONE
+
+    dp1 = ZERO
+
+    p2  = x
+
+    dp2 = ONE
+
+    do i = 2, nq
+
+      p0  = p1
+
+      dp0 = dp1
+
+      p1  = p2
+
+      dp1 = dp2
+
+      p2  = x*p1  - HALF*(real(i,kind=Rkind)-ONE)*p0
+
+      dp2 = x*dp1 + p1 - HALF*(real(i,kind=Rkind)-ONE)*dp0
+
+    end do
+
+  end subroutine herrec
+
+  subroutine herroot(x, nq, dp2, p1)
+
+    integer, intent(in) :: nq
+
+    real(kind=Rkind), intent(inout) :: x
+
+    real(kind=Rkind), intent(out) :: dp2, p1
+
+    real(kind=Rkind), parameter :: eps = 1.0e-14_Rkind
+
+    real(kind=Rkind) :: d, p2
+
+    integer :: i
+
+    do i = 1, 20
+
+      call herrec(p2, dp2, p1, x, nq)
+
+      d = p2 / dp2
+
+      x = x - d
+
+      if (abs(d) <= eps*(abs(x)+ONE)) return
+
+    end do
+
+  end subroutine herroot
+
+  
+
+  subroutine hermgauss_standard(nq, xp, w)
+
+    integer, intent(in) :: nq
+
+    real(kind=Rkind), intent(out) :: xp(nq), w(nq)
+
+    integer :: i
+
+    real(kind=Rkind) :: cc, dp2, p1, s, temp, x
+
+    cc = 1.77245385090551602729816748334_Rkind * gamma_perso(nq) / (TWO**(nq-1))
+
+    s = (TWO*real(nq,kind=Rkind) + ONE)**(ONE/6.0_Rkind)
+
+    do i = 1, (nq+1)/2
+
+      if (i == 1) then
+
+        x = s**3 - 1.85575_Rkind/s
+
+      else if (i == 2) then
+
+        x = x - 1.14_Rkind*(real(nq,kind=Rkind)**0.426_Rkind)/x
+
+      else if (i == 3) then
+
+        x = 1.86_Rkind*x - 0.86_Rkind*xp(1)
+
+      else if (i == 4) then
+
+        x = 1.91_Rkind*x - 0.91_Rkind*xp(2)
+
+      else
+
+        x = TWO*x - xp(i-2)
+
+      end if
+
+      call herroot(x, nq, dp2, p1)
+
+      xp(i)        = x
+
+      w(i)         = cc / dp2 / p1
+
+      xp(nq-i+1)   = -x
+
+      w(nq-i+1)    =  w(i)
+
+    end do
+
+    do i = 1, nq/2
+
+      temp         = xp(i)
+
+      xp(i)        = xp(nq+1-i)
+
+      xp(nq+1-i)   = temp
+
+    end do
+
+  end subroutine hermgauss_standard
+
+  subroutine hermgauss_plain(nq, xp, w)
+
+    integer, intent(in) :: nq
+
+    real(kind=Rkind), intent(out) :: xp(nq), w(nq)
+
+    integer :: i
+
+    call hermgauss_standard(nq, xp, w)
+
+    do i = 1, nq
+
+      w(i) = w(i) * exp(xp(i)*xp(i))
+
+    end do
+
+  end subroutine hermgauss_plain
 
     SUBROUTINE d0d1d2poly_Hag_exp(x, l, d0, d1, d2, deriv, alpha, p0)
       USE QDUtil_m
@@ -2557,50 +2797,5 @@
           END DO
     
        END SUBROUTINE hercom
-        
-        SUBROUTINE herrec(p2, dp2, p1, x, nq)
-          Implicit none
-          integer       ::i
-          integer       :: nq
-          real(kind=Rkind) :: dp0, dp1, dp2, p0, p1, p2, x
-    
-          p1 = ONE
-          dp1 = ZERO
-    
-          p2 = x
-          dp2 = ONE
-    
-          DO i = 2, nq
-    
-             p0 = p1
-             dp0 = dp1
-    
-             p1 = p2
-             dp1 = dp2
-    
-             p2 = x*p1 - HALF*(dble(i) - ONE)*p0
-             dp2 = x*dp1 + p1 - HALF*(dble(i) - ONE)*dp0
-    
-          END DO
-       END SUBROUTINE herrec
-    
-       SUBROUTINE herroot(x, nq, dp2, p1)
-          Implicit none
-          integer                   :: i
-          integer                   :: nq
-          real(kind=Rkind), parameter  :: eps = TEN**(-TWELVE) ! 1.0d-12
-          real(kind=Rkind)             :: d, dp2, p1, p2, x
-    
-          DO i = 1, 10
-             CALL herrec(p2, dp2, p1, x, nq)
-             d = p2/dp2
-             x = x - d
-             IF (ABS(d) <= eps*(ABS(x) + ONE)) THEN
-                RETURN
-             END IF
-    
-          END DO
-    
-       END SUBROUTINE herroot
-    
+            
 end module polyortho_m

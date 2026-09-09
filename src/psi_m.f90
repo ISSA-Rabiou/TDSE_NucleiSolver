@@ -2,14 +2,17 @@ module psi_m
 
    USE param_WP0_m
    USE Basis_m
+   USE SmolyakSparseGridMetadata_m, ONLY: BASIS_LAYOUT_SMOLYAK_SPARSE, ExpandSparseBasisToFullBasis, &
+        RestrictFullBasisToSparseBasis, DotSmolyakBasis
    USE NDindex_m
    implicit none
 
    TYPE :: psi_t
    
-      type(Basis_t), POINTER           :: Basis
-      REAL(kind= Rkind), ALLOCATABLE    :: RVec(:)
-      COMPLEX(kind= Rkind), ALLOCATABLE :: CVec(:)
+      type(Basis_t), POINTER             :: Basis
+      REAL(kind= Rkind), ALLOCATABLE     :: RVec(:)
+      COMPLEX(kind= Rkind), ALLOCATABLE  :: CVec(:)
+      LOGICAL                            :: UsesSparseSmolyakBasis = .FALSE.
       LOGICAL                            :: Grid = .TRUE.
 
    CONTAINS
@@ -21,10 +24,38 @@ module psi_m
    END TYPE psi_t
 
    public :: psi_t, write_psi, init_psi, dealloc_psi, write_psi_grid
-   public :: write_psi_basis, Calc_Norm_OF_PsiBasis, Calc_Norm_OF_PsiGrid, Calc_Norm_OF_Psi
+   public :: write_psi_basis, Calc_Norm_OF_PsiBasis, Calc_Norm_OF_PsiGrid, Calc_Norm_OF_Psi, Dot_Psi
    public:: Projection,Projection1,psi_init_GWP,Ecrire_psi
 contains
 
+
+   FUNCTION Dot_Psi(Psi1,Psi2) RESULT(value)
+      TYPE(psi_t), INTENT(IN) :: Psi1, Psi2
+      COMPLEX(KIND=Rkind) :: value
+      IF (Psi1%Grid .OR. Psi2%Grid) THEN
+         value=DOT_PRODUCT(Psi1%CVec,Psi2%CVec)
+      ELSEIF (Basis_UsesSmolyakSparseGrid(Psi1%Basis)) THEN
+         value=DotSmolyakBasis(Psi1%CVec,Psi2%CVec,Psi1%Basis%SmolyakSparseGrid)
+      ELSE
+         value=DOT_PRODUCT(Psi1%CVec,Psi2%CVec)
+      END IF
+   END FUNCTION Dot_Psi
+
+   SUBROUTINE GetDenseBasisCoefficients(Psi, DenseVec)
+      TYPE(psi_t), INTENT(IN) :: Psi
+      COMPLEX(KIND=Rkind), ALLOCATABLE, INTENT(OUT) :: DenseVec(:)
+      INTEGER :: ndim, nsurf, dense_size
+      ndim = SIZE(Psi%Basis%tab_basis) - 1
+      nsurf = 1
+      IF (ndim >= 0) nsurf = Psi%Basis%tab_basis(SIZE(Psi%Basis%tab_basis))%nb
+      dense_size = Psi%Basis%nb * nsurf
+      ALLOCATE(DenseVec(dense_size))
+      IF (Psi%UsesSparseSmolyakBasis .OR. Basis_UsesSmolyakSparseGrid(Psi%Basis)) THEN
+         CALL ExpandSparseBasisToFullBasis(DenseVec, Psi%CVec, Psi%Basis%SmolyakSparseGrid)
+      ELSE
+         DenseVec(:) = Psi%CVec(:)
+      END IF
+   END SUBROUTINE GetDenseBasisCoefficients
 
    SUBROUTINE copy_psi(psi_out, psi_in)
 
@@ -34,6 +65,8 @@ contains
       IF (allocated(psi_in%RVec)) THEN
          !write(out_unit,*) 'Coping psi_in in psi_out (real):'
          psi_out%RVec(:) = psi_in%RVec(:)
+         psi_out%Grid  = psi_in%Grid
+         psi_out%UsesSparseSmolyakBasis = psi_in%UsesSparseSmolyakBasis
          !CALL init_Basis1_TO_Basis2 (psi_in%Basis,psi_out%Basis)
          !CALL  construct_primitive_basis(psi_out%Basis)
          psi_out%Basis => psi_in%Basis
@@ -42,9 +75,12 @@ contains
       IF (allocated(psi_in%CVec)) THEN
          !write(out_unit,*) 'Coping psi_in in psi_out (complex):'
          psi_out%CVec(:) = psi_in%CVec(:)
+
          !CALL init_Basis1_TO_Basis2 (psi_in%Basis,psi_out%Basis)
          !CALL  construct_primitive_basis(psi_out%Basis)
          psi_out%Basis => psi_in%Basis
+         psi_out%Grid  = psi_in%Grid
+         psi_out%UsesSparseSmolyakBasis = psi_in%UsesSparseSmolyakBasis
          !write(out_unit,*) 'END Coping psi_in in psi_out'
       END IF
 
@@ -52,6 +88,7 @@ contains
 
    SUBROUTINE init_psi(psi, Basis, cplx, grid)
       USE Basis_m
+      USE SmolyakSparseGridMetadata_m, ONLY: BASIS_LAYOUT_SMOLYAK_SPARSE
    
       !======================================================================
       ! PURPOSE:
@@ -116,7 +153,6 @@ contains
       ! Step 4: Determine allocation size
       !-----------------------------------------------------------
       IF (grid) THEN
-         ! GRID representation
          IF (ALLOCATED(Basis%tab_basis)) THEN
             IF (debug) THEN
                WRITE(out_unit,*) 'Basis%tab_basis is allocated in Init_psi and size is ', SIZE(Basis%tab_basis)
@@ -141,6 +177,7 @@ contains
             END IF
             alloc_size = Basis%nb
          END IF
+         alloc_size = Get_TotalBasisCoefficientCount(Basis)
       END IF
    
       !-----------------------------------------------------------
@@ -194,6 +231,7 @@ contains
       ! Nullify the basis pointer (safe even if already nullified)
       !-----------------------------------------------------------
       NULLIFY(psi%Basis)
+      psi%UsesSparseSmolyakBasis = .FALSE.
    
       !-----------------------------------------------------------
       ! Deallocate real coefficient vector if allocated
@@ -370,6 +408,17 @@ contains
       integer                                          :: inb, i1, i3, Ndim
       Integer, allocatable                             :: Ib1(:), Ib2(:), Ib3(:)
    
+      ! Hagedorn projection is defined in the complete tensor-product basis.
+      ! For the legacy sparse layout, perform it on a dense temporary vector
+      ! and restrict only after all one-dimensional projections are complete.
+      IF (Basis_UsesSmolyakSparseGrid(psi_dt_1%Basis) .OR. &
+          psi_dt_1%UsesSparseSmolyakBasis .OR. &
+          Basis_UsesSmolyakSparseGrid(psi_dt_2%Basis) .OR. &
+          psi_dt_2%UsesSparseSmolyakBasis) THEN
+         CALL Projection_dense_compat(psi_dt_2, psi_dt_1)
+         RETURN
+      END IF
+
       ! Compute index arrays for multidimensional basis representation
       call Calc_index(Ib1=Ib1, Ib2=Ib2, Ib3=Ib3, Basis=psi_dt_1%Basis)
    
@@ -446,6 +495,75 @@ contains
    
       write (out_unit, *) 'END Hagedorn projection <psi|psi>=', Norm0
    END SUBROUTINE Projection
+
+   SUBROUTINE Projection_dense_compat(psi_dt_2, psi_dt_1)
+      TYPE(psi_t), INTENT(IN), TARGET    :: psi_dt_1
+      TYPE(psi_t), INTENT(INOUT), TARGET :: psi_dt_2
+      COMPLEX(KIND=Rkind), ALLOCATABLE, TARGET :: CIn(:), COut(:), B1(:), B2(:)
+      COMPLEX(KIND=Rkind), POINTER :: A1(:,:,:), A2(:,:,:)
+      INTEGER, ALLOCATABLE :: Ib1(:), Ib2(:), Ib3(:)
+      INTEGER :: ndim, inb, i1, i3, nfull
+      REAL(KIND=Rkind) :: Norm0
+
+      ndim = SIZE(psi_dt_1%Basis%tab_basis)-1
+      nfull = psi_dt_1%Basis%nb * psi_dt_1%Basis%tab_basis(ndim+1)%nb
+      ALLOCATE(CIn(nfull), COut(nfull))
+      IF (Basis_UsesSmolyakSparseGrid(psi_dt_1%Basis) .OR. &
+          psi_dt_1%UsesSparseSmolyakBasis) THEN
+         CALL ExpandSparseBasisToFullBasis(CIn, psi_dt_1%CVec, &
+                                           psi_dt_1%Basis%SmolyakSparseGrid)
+      ELSE
+         CIn = psi_dt_1%CVec
+      END IF
+      COut = CZERO
+      CALL Calc_index(Ib1=Ib1, Ib2=Ib2, Ib3=Ib3, Basis=psi_dt_1%Basis)
+
+      IF (ndim == 1) THEN
+         A1(1:Ib1(1),1:Ib2(1),1:Ib3(1)) => CIn
+         A2(1:Ib1(1),1:Ib2(1),1:Ib3(1)) => COut
+         DO i3=1,UBOUND(A1,3)
+            DO i1=1,UBOUND(A1,1)
+               A2(i1,:,i3)=MATMUL(psi_dt_1%Basis%tab_basis(1)%S,A1(i1,:,i3))
+            END DO
+         END DO
+      ELSE
+         ALLOCATE(B1(Ib1(1)*Ib2(1)*Ib3(1)))
+         A1(1:Ib1(1),1:Ib2(1),1:Ib3(1)) => CIn
+         A2(1:Ib1(1),1:Ib2(1),1:Ib3(1)) => B1
+         DO i3=1,UBOUND(A1,3)
+            DO i1=1,UBOUND(A1,1)
+               A2(i1,:,i3)=MATMUL(psi_dt_1%Basis%tab_basis(1)%S,A1(i1,:,i3))
+            END DO
+         END DO
+         DO inb=2,ndim
+            ALLOCATE(B2(Ib1(inb)*Ib2(inb)*Ib3(inb)))
+            A1(1:Ib1(inb),1:Ib2(inb),1:Ib3(inb)) => B1
+            A2(1:Ib1(inb),1:Ib2(inb),1:Ib3(inb)) => B2
+            DO i3=1,UBOUND(A1,3)
+               DO i1=1,UBOUND(A1,1)
+                  A2(i1,:,i3)=MATMUL(psi_dt_1%Basis%tab_basis(inb)%S,A1(i1,:,i3))
+               END DO
+            END DO
+            B1=B2
+            DEALLOCATE(B2)
+         END DO
+         COut=B1
+      END IF
+
+      IF (Basis_UsesSmolyakSparseGrid(psi_dt_2%Basis) .OR. &
+          psi_dt_2%UsesSparseSmolyakBasis) THEN
+         CALL RestrictFullBasisToSparseBasis(psi_dt_2%CVec, COut, &
+                                              psi_dt_2%Basis%SmolyakSparseGrid)
+      ELSE
+         psi_dt_2%CVec=COut
+      END IF
+      CALL Calc_Norm_OF_Psi(psi_dt_1,Norm0)
+      WRITE(out_unit,*) 'Begin Hagedorn projection <psi|psi>=',Norm0
+      CALL Calc_Norm_OF_Psi(psi_dt_2,Norm0)
+      WRITE(out_unit,*) 'END Hagedorn projection <psi|psi>=',Norm0
+      DEALLOCATE(CIn,COut,Ib1,Ib2,Ib3)
+      IF (ALLOCATED(B1)) DEALLOCATE(B1)
+   END SUBROUTINE Projection_dense_compat
 
    SUBROUTINE Projection1(psi_dt_2, psi_dt_1)
    TYPE(psi_t), intent(in), target                  :: psi_dt_1
@@ -662,9 +780,14 @@ END SUBROUTINE Calc_Norm_OF_Psi
       REAL(KIND=Rkind), INTENT(OUT) :: Norm
    
       ! Check which vector is allocated
-      IF (ALLOCATED(psi%CVec)) THEN
-         ! Compute norm for complex coefficients
-         Norm = SQRT(REAL(DOT_PRODUCT(psi%CVec, psi%CVec), KIND=Rkind))
+       IF (ALLOCATED(psi%CVec)) THEN
+          ! The packed canonical representation has overlapping term blocks;
+          ! its physical norm is the norm after weighted term recombination.
+          IF (psi%UsesSparseSmolyakBasis .OR. Basis_UsesSmolyakSparseGrid(psi%Basis)) THEN
+             Norm = SQRT(MAX(ZERO,REAL(DotSmolyakBasis(psi%CVec,psi%CVec,psi%Basis%SmolyakSparseGrid),KIND=Rkind)))
+          ELSE
+             Norm = SQRT(REAL(DOT_PRODUCT(psi%CVec, psi%CVec), KIND=Rkind))
+          END IF
       ELSEIF (ALLOCATED(psi%RVec)) THEN
          ! Compute norm for real coefficients
          Norm = SQRT(DOT_PRODUCT(psi%RVec, psi%RVec))
@@ -695,16 +818,18 @@ END SUBROUTINE Calc_Norm_OF_Psi
       INTEGER, INTENT(IN), OPTIONAL            :: nio
       LOGICAL, INTENT(IN)                      :: print_cplx, real_part
    
+      COMPLEX(KIND=Rkind), ALLOCATABLE, TARGET :: DenseVec(:)
       COMPLEX(KIND=Rkind), POINTER             :: psibe(:, :)
       INTEGER                                  :: ib, Ndim
       INTEGER                                  :: outunit_local
-      LOGICAL                                   :: has_time
+      LOGICAL                                  :: has_time
    
       !-----------------------------------------------------------
       ! Determine dimensions and set pointer to complex vector
       !-----------------------------------------------------------
       Ndim = SIZE(psi%Basis%tab_basis)
-      psibe(1:psi%Basis%nb, 1:psi%Basis%tab_basis(Ndim)%nb) => psi%CVec
+      CALL GetDenseBasisCoefficients(psi, DenseVec)
+      psibe(1:psi%Basis%nb, 1:psi%Basis%tab_basis(Ndim)%nb) => DenseVec
    
       !-----------------------------------------------------------
       ! Determine output unit
@@ -746,7 +871,7 @@ END SUBROUTINE Calc_Norm_OF_Psi
             END IF
          END IF
       END DO
-   
+      IF (ALLOCATED(DenseVec)) DEALLOCATE(DenseVec)
    END SUBROUTINE write_psi_basis
 
    SUBROUTINE write_psi_grid(psi, print_cplx, t, nio, real_part)
@@ -865,6 +990,8 @@ END SUBROUTINE Calc_Norm_OF_Psi
       REAL(KIND=Rkind)                     :: NormB ,normG  ,Re_normB           ! Norm in final representation
       INTEGER                              :: ndim, n_surf, nq, i_surf
       LOGICAL , PARAMETER                  :: debug = .FALSE.
+      CHARACTER(len=*), PARAMETER :: gwp_Filename = 'gwp.dat'
+      INTEGER, PARAMETER          :: gwp_File = 51
   
       !------------------ Initialization and setup ---------------------------------
       ndim   = SIZE(psi%Basis%tab_basis) - 1
@@ -902,7 +1029,7 @@ END SUBROUTINE Calc_Norm_OF_Psi
           END IF
       END IF
       
-      
+      OPEN(unit = gwp_File, file = gwp_Filename, status = 'replace')
       !------------------ Build Gaussian Wave Packet -----------------------------
       IF (psi%grid) THEN
           ! Case 1: Initialize directly on the grid (psi%grid is .true.)
@@ -914,15 +1041,14 @@ END SUBROUTINE Calc_Norm_OF_Psi
           
           DO iq = 1, nq
               gb(iq, i_surf) = calc_GWP(Tab_GWP(1), Q(iq, :))
+              WRITE(gwp_File,*) Q(iq,:),  abs(gb(iq, i_surf))**2
           END DO
           
           DEALLOCATE(Q)
   
       ELSE
           ! Case 2: Initialize in the basis representation (psi%grid is .false.)
-          IF(debug) WRITE(out_unit, *) 'Initializing GWP on grid, then transforming to basis (psi%grid = .FALSE.)=:',psi%grid
-          IF(debug) CALL Write_VecMat(psi%CVec, out_unit, 5, info='psi%CVec')
-          
+          IF(debug) WRITE(out_unit, *) 'Initializing GWP on grid, then transforming to basis psi%grid=:',psi%grid          
           CALL init_psi(psi_temp, psi%Basis, cplx=.true., grid=.true.)
           CALL calc_Q_grid(Q, psi%Basis)
           
@@ -931,11 +1057,13 @@ END SUBROUTINE Calc_Norm_OF_Psi
           
           DO iq = 1, nq
               gb(iq, i_surf) = calc_GWP(Tab_GWP(1), Q(iq, :))
+              WRITE(gwp_File,*) Q(iq,:),  abs(gb(iq, i_surf))**2
           END DO
   
           DEALLOCATE(Q)
   
           CALL GridTOBasis_nD_cplx(psi%CVec, psi_temp%CVec, psi%Basis)
+          IF(debug) CALL Write_VecMat(psi%CVec, out_unit, 5, info='psi%CVec')
   
           CALL dealloc_psi(psi_temp)
       END IF
