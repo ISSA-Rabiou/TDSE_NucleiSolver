@@ -16,9 +16,12 @@
 !*.inp
 !*.sh
 !README*
-!Makefile
+!Makefile*
 !LICENSE*
 !LICENCE*
+
+!scripts/
+!scripts/*
 
 # Conserver le dossier test et son architecture, mais pas les sorties
 # produites par les exécutions. Les sources, scripts et inputs restent suivis.

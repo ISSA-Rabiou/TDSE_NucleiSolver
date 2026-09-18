@@ -46,19 +46,8 @@ A high-performance tool for simulating quantum molecular dynamics using generali
 
 ## configuration
 The main program compilation need two directories one for object(obj) et second for external librairies.
-### Setup
-
-```bash
-# 1. Create build directories in TD_Schrod_Rabiou directory
-mkdir -p obj EXT_LIB
-```
-
-```bash
-# 2. Build dependencies
-cd EXT_LIB
-git clone https://github.com/lauvergn/QuantumModelLib.git
-# Follow build instructions in each repository
-```
+They are created automatically.
+The external libraries (stored in EXT_lib directory) are compilled automatically.
 
 ## Potential Setup (`&potential` Namelist)
 
