@@ -1,14 +1,180 @@
+# Disable the default rules
 MAKEFLAGS += --no-builtin-rules --no-builtin-variables
 
-FC := gfortran
-#FC = ifor
+DEBUG := t
+DDEBUG := $(subst T,t,$(DEBUG))
+
+
 
 OBJ_DIR = obj
 MOD_DIR = obj
 SRC_DIR = src
 MAIN_DIR = app
 
+#=================================================================================
+# Some variables for the external libraries
+#=================================================================================
+MAIN_path   := $(shell pwd)
 
+#=================================================================================
+#=================================================================================
+# Compiler?
+#Possible values: ifort, ifx, gfortran (default), nagfor 
+ FC := gfortran
+#FC := ifort
+#FC := nagfor
+#
+# Optimize? Empty: default Optimization; 0: No Optimization; 1 Optimization
+OPT := 1
+## OpenMP? Empty: default with OpenMP; 0: No OpenMP; 1 with OpenMP
+OMP := 1
+## Lapack/blas/mkl? Empty: default with Lapack; 0: without Lapack; 1 with Lapack
+LAPACK := 1
+## Arpack? Empty: default No Arpack; 0: without Arpack; 1 with Arpack
+ARPACK := 0
+## force the default integer (without kind) during the compillation.
+## default 4: , INT=8 (for kind=8)
+INT := 4
+## change the real kind
+## default real64: , possibilities, real32, real64, real128
+RKIND := real64
+# For some compilers (like lfortran), real128 (quadruple precision) is not implemented
+# WITHRK16 = 1 (0) compilation with (without) real128
+WITHRK16 := 0
+# branch of the external libraries (main, dev)
+BRANCH := main
+# how to clean (recursively (1) or not (0)) the external libraries (*_loc)
+RECCLEAN := 1
+#=================================================================================
+ifeq ($(FC),)
+  override FC := gfortran
+endif
+FFC := $(FC)
+
+ifeq ($(OPT),)
+  override OPT := 1
+endif
+ifneq ($(OPT),$(filter $(OPT),0 1))
+  $(info *********** OPT (optimisation):        $(OPT))
+  $(info Possible values: 0, 1)
+  $(error ERROR: Incompatible option values)
+endif
+OOPT := $(OPT)
+
+ifeq ($(OMP),)
+  override OMP := 1
+endif
+ifneq ($(OMP),$(filter $(OMP),0 1))
+  $(info *********** OMP (openmp):        $(OMP))
+  $(info Possible values: 0, 1)
+  $(error ERROR: Incompatible option values)
+endif
+OOMP := $(OMP)
+
+ifeq ($(LAPACK),)
+  override LAPACK := 1
+endif
+ifneq ($(LAPACK),$(filter $(LAPACK),0 1))
+  $(info *********** LAPACK:        $(LAPACK))
+  $(info Possible values: 0, 1)
+  $(error ERROR: Incompatible option values)
+endif
+LLAPACK := $(LAPACK)
+
+ifeq ($(ARPACK),)
+  override ARPACK := 1
+endif
+# We cannot use ARPACK without lapack
+ifeq ($(LAPACK),0)
+  override ARPACK := 0
+endif
+ifneq ($(ARPACK),$(filter $(ARPACK),0 1))
+  $(info *********** ARPACK:        $(ARPACK))
+  $(info Possible values: 0, 1)
+  $(error ERROR: Incompatible option values)
+endif
+AARPACK := $(ARPACK)
+
+ifneq ($(INT),$(filter $(INT),4 8))
+  $(info *********** INT (change default integer):        $(INT))
+  $(info Possible values: 4, 8)
+  $(error ERROR: Incompatible option values)
+endif
+
+ifneq ($(RKIND),$(filter $(RKIND),real32 real64 real128))
+  $(info *********** RKIND (select the real kind):        $(RKIND))
+  $(info Possible values (case sensitive): real32 real64 real128)
+  $(error ERROR: Incompatible option values)
+endif
+
+WWITHRK16 := $(WITHRK16)
+ifneq ($(WITHRK16),$(filter $(WITHRK16),0 1))
+  $(info *********** WITHRK16 (compilation with real128):        $(WITHRK16))
+  $(info Possible values: 0, 1)
+  $(error ERROR: Incompatible option values)
+endif
+ifeq ($(RKIND),real128)
+  ifeq ($(WWITHRK16),0)
+    $(info "Incompatible options:")
+    $(info ***********RKIND:        $(RKIND))
+    $(info ***********WITHRK16:     $(WITHRK16))
+    $(error ERROR: Incompatible RKIND and WITHRK16 option values)
+  endif
+endif
+export RKIND WITHRK16 INT  LAPACK   ARPACK   FC  OPT  OMP BRANCH
+export      WWITHRK16     LLAPACK  AARPACK  FFC OOPT OOMP
+
+#=================================================================================
+# extension for the library (.a), objects and modules directory
+#=================================================================================
+ext_obj    :=_$(FC)_opt$(OPT)_omp$(OMP)_lapack$(LAPACK)_int$(INT)_$(RKIND)
+#=================================================================================
+# External Libraries : Tnum-Tana FOR_EVRT QuantumModelLib EVRT_dnSVM AD_dnSVM ConstPhys nDindex QDUtilLib
+#=================================================================================
+EXTLIB_LIST := Tnum-Tana FOR_EVRT QuantumModelLib EVRT_dnSVM AD_dnSVM ConstPhys nDindex QDUtilLib
+ifneq ($(EXTLIB_LIST),)
+  ifeq ($(ExtLibDIR),)
+    ExtLibDIR := $(MAIN_path)/EXT_Lib
+  endif
+  OK := $(shell if test -d $(ExtLibDIR); then echo "ok"; fi)
+  #$(info ***********OK:       $(OK))
+  ifeq ($(OK),)
+    $(info WARNING: $(ExtLibDIR) does not exist!)
+    $(shell mkdir $(ExtLibDIR) ) 
+  endif
+  export ExtLibDIR
+  EXTLib_DIR  := $(addprefix $(ExtLibDIR)/, $(EXTLIB_LIST))
+  $(info ***********EXTLib_DIR:       $(EXTLib_DIR))
+  EXTMod      := $(addsuffix /OBJ/obj$(ext_obj), $(EXTLib_DIR))
+  $(info ***********EXTOBJDIR:       $(EXTMod))
+  EXTLibOBJ      := $(addsuffix /*.o, $(EXTMod))
+  $(info ***********EXTLibOBJ:       $(EXTLibOBJ))
+
+  EXTMod      := $(addprefix -I,$(EXTMod))
+  EXTLib := $(shell for LLIB in $(EXTLIB_LIST) ; do echo $(ExtLibDIR)/$$LLIB"/lib"$$LLIB""$(ext_obj)".a" ; done)
+endif
+# We use the full TnunTana library
+EXTLib := $(MAIN_path)"/EXT_Lib/Tnum-Tana/libTnum-TanaFull"$(ext_obj)".a"
+# special files
+EXT_SRC  := calc_f2_f1Q.f90 Sub_X_TO_Q_ana.f90 Calc_Tab_dnQflex.f90 read_para.f90
+EXT_OBJ  := $(EXT_SRC:.f90=.o)
+EXT_OBJ  += sub_system.o #it has to be added manually because this source file has the extension .f or .f90
+ifeq ($(DDEBUG),t)
+  $(info ***********EXT_SRC:         $(EXT_SRC))
+  $(info ***********EXT_OBJ files:   $(EXT_OBJ))
+endif
+EXT_OBJ  := $(addprefix $(OBJ_DIR)/,$(EXT_OBJ))
+
+# =====================================================================================
+# External library paths
+# =====================================================================================
+FFAGS +=  $(EXTMod) 
+
+LIBS := $(EXTLib)
+LDFLAGS := $(LIBS) -llapack -lblas
+
+
+# =====================================================================================
 FFLAGS := -cpp -Wall -Wextra -Wimplicit-interface \
           -g -Og \
           -fopenmp \
@@ -16,33 +182,31 @@ FFLAGS := -cpp -Wall -Wextra -Wimplicit-interface \
           -finit-real=nan -finit-integer=-999999 \
           -ffree-line-length-none \
           -Warray-temporaries \
-          -J$(MOD_DIR)
-
-# =====================================================================================
-# External library paths
-# =====================================================================================
-QML_DIR = EXT_Lib/QuantumModelLib
-QDU_DIR = $(QML_DIR)/Ext_Lib/QDUtilLib
-MOD_EXT = $(QDU_DIR)/OBJ/obj_gfortran_opt1_omp1_lapack1_int4_real64
-
-TNUM_ROOT = EXT_Lib/Tnum-Tana
-TNUM_LIB  = $(TNUM_ROOT)/libTnum-TanaFull.a
-EVRT_LIB  = $(TNUM_ROOT)/Ext_Lib/EVRT_dnSVM_loc/libEVRT_dnSVM.a
-
-MOD_TNUM  = $(TNUM_ROOT)/OBJ/obj_gfortran_opt1_omp1_lapack1_int4_real64
-MOD_CONST = $(TNUM_ROOT)/Ext_Lib/ConstPhys/OBJ/obj_gfortran_opt1_omp1_lapack1_int4_real64
-MOD_EVRT  = $(TNUM_ROOT)/Ext_Lib/EVRT_dnSVM_loc/OBJ/obj_gfortran_opt1_omp1_lapack1_int4_real64
-
-FFLAGS += -I$(MOD_EXT) -I$(MOD_TNUM) -I$(MOD_CONST) -I$(MOD_EVRT)
-
-LIBS = -L$(QML_DIR) -lQMLFull \
-       -L$(QDU_DIR) -lQDUtilLib \
-       -L$(TNUM_ROOT) -lTnum-TanaFull \
-       -L$(TNUM_ROOT)/Ext_Lib/EVRT_dnSVM_loc -lEVRT_dnSVM \
-       -lblas -llapack
-
-LDFLAGS = $(LIBS)
-
+          -J$(MOD_DIR) $(EXTMod)
+#=================================================================================
+#=================================================================================
+#=================================================================================
+#=================================================================================
+$(info ***********************************************************************)
+$(info ***********Library name:    $(LIB_NAME))
+$(info ***********Library version: $(LIB_VERSION))
+$(info ***********OS:              $(OS))
+$(info ***********COMPILER:        $(FC))
+$(info ***********COMPILER_VER:    $(FC_VER))
+$(info ***********OPTIMIZATION:    $(OPT))
+$(info ***********OpenMP:          $(OMP))
+$(info ***********INT:             $(INT))
+$(info ***********RKIND:           $(RKIND))
+$(info ***********WITHRK16:        $(WWITHRK16))
+$(info ***********LAPACK:          $(LAPACK))
+$(info ***********FFLAGS:          $(FFLAGS))
+$(info ***********FLIB:            $(FLIB))
+$(info ***********ext_obj:         $(ext_obj))
+$(info )
+$(info ***********ExtLibDIR:       $(ExtLibDIR))
+$(info ***********EXTLib:          $(EXTLib))
+$(info ***********EXTMod:          $(EXTMod))
+$(info ***********************************************************************)
 # =====================================================================================
 # Main program
 # =====================================================================================
@@ -84,11 +248,7 @@ lib: $(TARGET)
 # Link executable
 # =====================================================================================
 
-$(TARGET): $(OBJ_DIR)/$(MAIN).o $(OBJ) \
-           $(QML_DIR)/libQMLFull.a \
-           $(QDU_DIR)/libQDUtilLib.a \
-           $(TNUM_LIB) \
-           $(EVRT_LIB)
+$(TARGET): $(OBJ_DIR)/$(MAIN).o $(OBJ) | $(LIBS)
 	$(FC) $(FFLAGS) -o $@ $^ $(LDFLAGS)
 
 # =====================================================================================
@@ -108,6 +268,9 @@ $(OBJ_DIR)/%.o: $(SRC_DIR)/%.f90 | $(OBJ_DIR)
 # ============================================================
 # Dépendances manuelles entre modules (format $(OBJ_DIR)/...)
 # ============================================================
+
+$(TARGET):                    | $(OBJ_DIR) $(EXTLib)
+$(OBJ):                       | $(OBJ_DIR) $(EXTLib)
 
 $(OBJ_DIR)/Ana_psi_m.o: \
     $(OBJ_DIR)/Basis_m.o \
@@ -215,26 +378,19 @@ $(OBJ_DIR)/TD_SCHROD.o: \
 $(OBJ_DIR):
 	mkdir -p $@
 
-# =====================================================================================
-# External library verification
-# =====================================================================================
-
-$(QML_DIR)/libQMLFull.a:
-	@test -e $@ || { echo "Error: Library $@ not found!"; exit 1; }
-
-$(QDU_DIR)/libQDUtilLib.a:
-	@test -e $@ || { echo "Error: Library $@ not found!"; exit 1; }
-
-$(TNUM_LIB):
-	@test -e $@ || { echo "Error: Library $@ not found!"; exit 1; }
-
-$(EVRT_LIB):
-	@test -e $@ || { echo "Error: Library $@ not found!"; exit 1; }
-
+#===============================================
+#===============================================
+#============= External libraries  =============
+#===============================================
+.PHONY: getlib
+getlib: $(EXTLib)
+#
+$(EXTLib):
+	$(MAKE) -C $(ExtLibDIR) -f $(MAIN_path)/scripts/makefile-extlib LIBA=$@
 # =====================================================================================
 # Cleaning
 # =====================================================================================
-
+.PHONY: clean distclean cleanall cleanlocextlib
 clean:
 	rm -rf $(OBJ_DIR)/*.o
 	rm -rf $(MOD_DIR)/*.mod
@@ -242,6 +398,13 @@ clean:
 distclean: clean
 	rm -f $(TARGET)
 
+
+cleanall: distclean
+	if [ "$(EXTLIB_LIST)" != "" -a "$(RECCLEAN)" = "1" ]; then ./scripts/cleanExtLib cleanall "$(ExtLibDIR)" "$(EXTLIB_LIST)" 0; fi
+	@echo "  done remove the *.a libraries and the OBJ directory for "$(LIB_NAME)
+cleanlocextlib: distclean
+	if [ "$(EXTLIB_LIST)" != "" -a "$(RECCLEAN)" = "1" ] ; then ./scripts/cleanExtLib cleanlocextlib "$(ExtLibDIR)" "$(EXTLIB_LIST)" 0; fi
+	@echo "  done remove all local library directories (..._loc) for "$(LIB_NAME)
 # =====================================================================================
 # Information
 # =====================================================================================
