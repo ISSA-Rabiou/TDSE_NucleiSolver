@@ -56,16 +56,16 @@ a2 1.83
     ndim = 3
    /
    &basis_nd name='dp' nb_basis=4/
-    &basis_nd name='HO' nb=20 nq=25 Q0=1.8107934896 SCALEQ= 5.3461602503 Imp_k=0.0  alpha =( 28.5814294224,0.00)  /
-    &basis_nd name='HO' nb=20 nq=25  Q0=1.8107934896 SCALEQ= 5.3461602503 Imp_k=0.0  alpha =( 28.5814294224,0.00)  /
-    &basis_nd name='HO' nb=20 nq=25 Q0=1.8230843491 SCALEQ=4.1722088823 Imp_k=0.0  alpha =( 17.4073269576,0.0)/
-    &basis_nd name= 'el' nb=1/
+    &basis_nd name='HO' nb=10 nq=12 Q0=1.8107934896 SCALEQ=5.3461602503 Imp_k=0.0  alpha=( 28.5814294224,0.0) /
+    &basis_nd name='HO' nb=10 nq=12 Q0=1.8107934896 SCALEQ=5.3461602503 Imp_k=0.0  alpha=( 28.5814294224,0.0) /
+    &basis_nd name='HO' nb=10 nq=12 Q0=1.8230843491 SCALEQ=4.1722088823 Imp_k=0.0  alpha=( 17.4073269576,0.0) /
+    &basis_nd name='el' nb=1 /
 
  &defGWP ndim=3  Elecindex= 1 Coef=(1.,0.)/
- &defWP0  sigma=  0.2645288387 Beta=0.0 Qeq=1.8107934896  imp_k=0.0 gamma=0.0 /
- &defWP0  sigma= 0.2645288387  Beta=0.0 Qeq=1.8107934896  imp_k=0.0 gamma=0.0 /
- &defWP0  sigma=0.3389603930  Beta=0.0 Qeq=1.8230843491   imp_k=0.0 gamma=0.0 /
+ &defWP0  sigma=  0.2645288387 Beta=0.0 Qeq=1.8107934896  imp_k=1.0 gamma=0.0 /
+ &defWP0  sigma= 0.2645288387  Beta=0.0 Qeq=1.8107934896  imp_k=1.0 gamma=0.0 /
+ &defWP0  sigma=0.3389603930  Beta=0.0 Qeq=1.8230843491   imp_k=1.0 gamma=0.0 /
 
-&prop t0  = 0  tf  = 1.0 delta_t =0.1  eps=1.e-20
-      max_iter=500   propa_name='non_hagedorn'  propa_name2='taylor' Beta=F  P=F renorm=F  /
+&prop t0=0.  tf=100000.0 delta_t=10.  eps=1.e-20
+      max_iter=500 propa_name='non_hagedorn' propa_name2='taylor' Beta=F  P=F renorm=F  /
 **
