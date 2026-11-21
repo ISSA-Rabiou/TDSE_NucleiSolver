@@ -2,11 +2,15 @@ module Ana_psi_m
     USE Basis_m
     USE NDindex_m
     USE psi_m
+    USE QDUtil_m
     implicit none
     private
     public:: Population, Qpop
+    public :: Popu
     public::  Calc_Av_imp_k_nD
     public :: Calc_Avg_A_nD,test_analyse_psi,Calc_AVQ_SQ_nD
+    public :: Calc_reduced_Density_surf, Calc_Rdensity_Tot, Calc_reduced_density, Calc_sum_psi
+    public :: eval_pics
  
  contains
  
@@ -29,8 +33,8 @@ module Ana_psi_m
        call Calc_tab_Iq0(Tab_Iq,psi%Basis)
        call Calc_Avg_A_nD(psi, At)
  
-         write(out_unit,*) 'At',At
-         write(out_unit,*) '=============================================================================='
+         IF (Debug_Enabled()) write(out_unit,*) 'At',At
+         IF (Debug_Enabled()) write(out_unit,*) '=============================================================================='
     
     END SUBROUTINE 
     
@@ -67,10 +71,10 @@ module Ana_psi_m
  
        real(kind=Rkind), intent(inout)                  :: Qp(:)
        real(kind=Rkind)                                 :: Norm(2)
-       logical, parameter                            :: debug = .true.
+
        integer                                       :: iq, inb, ndim
  
-       IF (debug) THEN
+       IF (Debug_Enabled()) THEN
           !write(out_unit,*) 'BEGINNING Qpop'
           flush (out_unit)
        END IF
@@ -90,8 +94,8 @@ module Ana_psi_m
        !   write(666,*)   psi_gb(iq,1) , psi_gb(iq,2)
        !End Do
  
-       print *, Qp, Norm
-       IF (debug) THEN
+       IF (Debug_Enabled()) PRINT *, Qp, Norm
+       IF (Debug_Enabled()) THEN
           !        write(out_unit,*) 'END Qpop
           flush (out_unit)
        END IF
@@ -116,14 +120,14 @@ module Ana_psi_m
       COMPLEX(KIND=Rkind),  INTENT(INOUT) :: At(:)   ! Output averaged complex array
   
       !----------------- Locals -----------------
-      LOGICAL, PARAMETER      :: debug = .FALSE.
+
       INTEGER                  :: Ndim, Ib
       REAL(KIND=Rkind), ALLOCATABLE :: VQ(:), VP(:), VQQ(:), VQP(:), SQt(:)
       REAL(KIND=Rkind), ALLOCATABLE :: CA(:), CB(:)
       INTEGER, ALLOCATABLE         :: Tab_Iq(:, :)
   
       !----------------- Debug output -----------------
-      IF (debug) THEN
+      IF (Debug_Enabled()) THEN
           FLUSH(out_unit)
       END IF
   
@@ -159,7 +163,7 @@ module Ana_psi_m
       END DO
   
       !----------------- Debug final output -----------------
-      IF (debug) THEN
+      IF (Debug_Enabled()) THEN
           WRITE(out_unit,*) 'At = ', At
           FLUSH(out_unit)
       END IF
@@ -179,7 +183,7 @@ module Ana_psi_m
        !locals variables---------------------------------------------------------
        type(psi_t), target                                 :: psi, ikpsi
        type(psi_t), target                                 :: psi_b, ikpsi_b
-       logical, parameter                                  :: debug = .FALSE.
+
        complex(kind=Rkind), pointer                        :: GB(:,:,:)
        complex(kind=Rkind), pointer                        :: d1gg(:,:,:)
        complex(kind=Rkind), pointer                        :: ikpsi0(:,:,:)
@@ -188,7 +192,7 @@ module Ana_psi_m
        integer                                             :: nq,inb,Ndim,Inbe,i1,i3
        !debuging----------------------------------------------------------------
        
-       IF (debug) THEN
+       IF (Debug_Enabled()) THEN
           flush (out_unit)
        END IF
        
@@ -224,7 +228,7 @@ module Ana_psi_m
        call GridTOBasis_nD_cplx(ikpsi_b%CVec, ikpsi%CVec, psi0%Basis)
        K = dot_product(psi_b%CVec, ikpsi_b%CVec)/dot_product(psi_b%CVec, psi_b%CVec)
 
-       IF (debug) THEN
+       IF (Debug_Enabled()) THEN
           write (out_unit, *) '<psi/-id_x/psi> =', K
           flush (out_unit)
        END IF
@@ -318,7 +322,7 @@ module Ana_psi_m
      integer, intent(in)                          :: Ib
      !locals variables----------------------      ---------------
      type(psi_t), target                           :: psi, d1psi
-     logical, parameter                            :: debug = .true.
+
      complex(kind=Rkind), pointer                  :: GB(:,:,:)
      complex(kind=Rkind), pointer                  :: d1gg(:,:,:)
      complex(kind=Rkind), pointer                  :: d1psi0(:,:,:)
@@ -334,7 +338,7 @@ module Ana_psi_m
      integer, allocatable                          :: Tab_iq(:)
      !debuging--------------------------------------------------
      
-     IF (debug) THEN
+     IF (Debug_Enabled()) THEN
         flush (out_unit)
      END IF
      
@@ -401,7 +405,7 @@ module Ana_psi_m
        deallocate(Ib1, Ib2, Ib3,Iq1, Iq2, Iq3)
        deallocate(N,VQPEl,psi_gb,d1psi_gb,Tab_iq)
  
-     IF (debug) THEN
+     IF (Debug_Enabled()) THEN
         flush (out_unit)
      END IF
     
@@ -432,7 +436,7 @@ module Ana_psi_m
     integer,intent(in)                            :: Tab_Iq(:, :)
     real(kind=Rkind), intent(inout)               :: AVQ(:), SQ(:)
  
-    logical, parameter                            :: debug = .false.
+
     TYPE(Psi_t)                                   :: psi
     complex(kind=Rkind), allocatable              :: psi_gb(:, :)
     real(kind=Rkind), allocatable                 :: AVQel(:, :), SQel(:, :),Q(:)
@@ -441,7 +445,7 @@ module Ana_psi_m
     integer                                       :: iq, inbe, inb,nsurf,nq,ndim,Ib
  
  
-    IF (debug) THEN
+    IF (Debug_Enabled()) THEN
        write (out_unit, *) 'Beging AVQ'
        flush (out_unit)
     END IF
@@ -493,7 +497,7 @@ module Ana_psi_m
  
     Deallocate (Psi_gb,N,AVQel,SQel,Q)
     CALL dealloc_psi(psi)
-    IF (debug) THEN
+    IF (Debug_Enabled()) THEN
        write (out_unit, *) 'END AVQ'
        flush (out_unit)
     END IF
@@ -525,7 +529,7 @@ SUBROUTINE Calc_AVQ_SQ_nD_scd(psi_in, AVQ, SQ, VQQ, Tab_Iq)
    REAL(KIND=Rkind), INTENT(INOUT)            :: AVQ(:), SQ(:), VQQ(:)
 
    !----------------- Locals --------------------
-   LOGICAL, PARAMETER                          :: debug = .FALSE.
+
    TYPE(Psi_t)                                 :: psi
    COMPLEX(KIND=Rkind), ALLOCATABLE           :: psi_gb(:, :)
    REAL(KIND=Rkind), ALLOCATABLE              :: AVQel(:, :), SQel(:, :), Q(:), N(:)
@@ -533,7 +537,7 @@ SUBROUTINE Calc_AVQ_SQ_nD_scd(psi_in, AVQ, SQ, VQQ, Tab_Iq)
    INTEGER                                     :: iq, inbe, inb, nsurf, nq, ndim
 
    !----------------- Debug ---------------------
-   IF (debug) THEN
+   IF (Debug_Enabled()) THEN
        !WRITE(out_unit,*) '>>> Begin Calc_AVQ_SQ_nD_scd'
        FLUSH(out_unit)
    END IF
@@ -589,7 +593,7 @@ SUBROUTINE Calc_AVQ_SQ_nD_scd(psi_in, AVQ, SQ, VQQ, Tab_Iq)
    DEALLOCATE(psi_gb, N, AVQel, SQel, Q)
    CALL dealloc_psi(psi)
 
-   IF (debug) THEN
+   IF (Debug_Enabled()) THEN
       write(out_unit,*) 'AVQ= ', AVQ
       write(out_unit,*) 'SQ= ', SQ
       write(out_unit,*) 'VQQ= ', VQQ
@@ -597,6 +601,248 @@ SUBROUTINE Calc_AVQ_SQ_nD_scd(psi_in, AVQ, SQ, VQQ, Tab_Iq)
    END IF
 
 END SUBROUTINE Calc_AVQ_SQ_nD_scd
+
+
+subroutine Popu(Psi, Pop)
+   implicit none
+   type(Psi_t), intent(in), target                 :: Psi
+   complex(kind=Rkind), pointer                    :: Psi_bb(:, :)
+   complex(kind=Rkind), allocatable, target        :: DenseVec(:)
+   real(Kind=Rkind), intent(inout), allocatable    ::Pop(:)
+   integer                                         :: inb,nsurf,ndim,nb
+   real(Kind=Rkind)                                :: Norm
+   ndim = size(Psi%Basis%tab_basis)-1
+   nb = Psi%Basis%nb
+   nsurf = Psi%Basis%tab_basis(ndim+1)%nb
+   call GetDenseBasisCoefficients(Psi, DenseVec)
+   Psi_bb(1:nb, 1:nsurf) => DenseVec
+   call Calc_Norm_OF_Psi(Psi, Norm)
+   do inb = 1, nsurf
+      Pop(inb) = dot_product(Psi_bb(:, inb), Psi_bb(:, inb))/Norm
+   end do
+   if (allocated(DenseVec)) deallocate(DenseVec)
+end subroutine 
+
+
+ SUBROUTINE psi_per_surf(Gsurf,G,Basis,ibe)
+
+     IMPLICIT NONE
+     TYPE(Basis_t), intent(in)                              :: Basis
+     complex(kind=Rkind), intent(in) ,target                :: G(:)
+     complex(kind=Rkind), intent(inout) ,allocatable        :: Gsurf(:)
+     integer  , intent(in)                                  :: ibe
+     
+     complex(kind=Rkind), pointer                           :: psi_gb(:, :)
+     integer                                                :: nq,nsurf
+
+     IF(Allocated(Gsurf)) deallocate(Gsurf)
+
+     nq = Basis%nq
+     nsurf = Basis%tab_basis(size(Basis%tab_basis))%nb
+     allocate(Gsurf(nq))
+     Gsurf = CZERO
+
+      psi_gb(1:nq, 1:nsurf) => G
+    
+      Gsurf(1:nq) =  psi_gb(1:nq, ibe) 
+
+
+  END SUBROUTINE
+
+
+
+  SUBROUTINE Calc_reduced_Density_surf(Rdensity,G,Basis)
+
+     USE QDUtil_m
+
+    TYPE(Basis_t), intent(in)                                    :: Basis
+    complex(Kind=Rkind),intent(in)                               :: G(:)                                         
+   TYPE(REDUCED_DENSIRY_t),intent(inout)                         :: Rdensity           
+
+    !Locals variables ----------------------------------------------------------------------------
+
+    integer, allocatable                                         :: Tab_iq(:)
+    integer                                                      :: ndim, Iq,inb,ib
+    real(Kind=Rkind)                                             :: W
+    logical                                                      :: Endloop
+      ndim  = SIZE(Basis%tab_basis) - 1
+      allocate (Tab_iq(ndim))
+      call Init_tab_ind(Tab_iq, Basis%NDindexq) 
+         Iq = 0
+         DO
+            Iq = Iq + 1
+
+            CALL increase_NDindex(Tab_iq, Basis%NDindexq, Endloop)
+            IF (Endloop) exit
+             W = ONE
+            DO inb = 1, ndim  
+               W = W*Basis%tab_basis(inb)%w(Tab_iq(inb))
+            END DO
+            If(ndim ==1) then
+               Rdensity%prob(Iq) = Rdensity%prob(Iq) + conjg(G(Iq))*G(Iq)*W
+            Else
+               DO ib = 1, ndim
+                   Rdensity%tab_prob(ib)%prob(Tab_iq(ib)) = Rdensity%tab_prob(ib)%prob(Tab_iq(ib)) + conjg(G(Iq))*G(Iq)*W
+               END DO
+            End If
+         END DO            
+      Deallocate(Tab_iq)
+ END SUBROUTINE 
+
+
+ SUBROUTINE Calc_Rdensity_Tot(Rdensity,Basis)
+    
+  USE  QDUtil_m  
+  TYPE(REDUCED_DENSIRY_t),intent(inout)         :: Rdensity
+  TYPE(Basis_t), intent(in), target             :: Basis
+
+  integer                                       :: ndim,Ib
+
+  ndim  = SIZE(Basis%tab_basis) - 1
+
+  allocate(Rdensity%Norm(ndim))
+      
+
+       Rdensity%Norm(:) = ZERO
+  
+     DO Ib=1,ndim
+       
+           Rdensity%Norm(Ib) = sum(Rdensity%tab_prob(Ib)%prob(:))
+  
+     END DO
+
+     Write(*,*) 'RedTot',Rdensity%Norm(:)
+
+
+END SUBROUTINE
+
+
+ SUBROUTINE Calc_reduced_density(Rdensity,B,Basis)
+      USE  QDUtil_m
+      TYPE(Basis_t), intent(in), target               :: Basis
+      complex(kind=Rkind), intent(in), target         :: B(:)
+      TYPE(REDUCED_DENSIRY_t),intent(inout)           :: Rdensity
+
+        TYPE(REDUCED_DENSIRY_t)                       :: Rdensitytemp
+        complex(kind=Rkind),allocatable               :: G(:),Gsurf(:)
+        integer                                       :: nsurf,nq,ibe,ndim,ib
+
+         nsurf = Basis%tab_basis(size(Basis%tab_basis))%nb
+         nq = nsurf*Basis%nq
+         ndim = size(Basis%tab_basis)-1
+
+         call Rdensity_Dealloc(Rdensity,Basis)
+         call Rdensity_alloc(Rdensity,Basis)          
+         allocate(G(nq))
+         CALL BasisTOGrid_nD_cplx(G,B,Basis)
+        
+       DO ibe = 1,nsurf
+
+          CALL psi_per_surf(Gsurf,G,Basis,ibe)
+          call  Rdensity_alloc(Rdensitytemp,Basis)
+          CALL Calc_reduced_Density_surf(Rdensitytemp,Gsurf,Basis)
+           If(ndim==1) then
+             Rdensity%prob(:)  = Rdensity%prob(:)+Rdensitytemp%prob(:)
+          Else
+           Do ib =1, ndim
+              Rdensity%tab_prob(ib)%prob(:)  = Rdensity%tab_prob(ib)%prob(:)+Rdensitytemp%tab_prob(ib)%prob(:)
+           END DO
+          End If
+          call   Rdensity_Dealloc(Rdensitytemp,Basis)
+          
+
+       END DO   
+      deallocate(G)
+
+ END SUBROUTINE
+
+
+
+ SUBROUTINE Calc_sum_psi(Int,G1,G2,Basis)
+   USE QDUtil_m
+   LOGICAL :: debug
+   TYPE(Basis_t),intent(in)                      :: Basis
+   complex(kind=Rkind), intent(in)   ,target     :: G1(:),G2(:)
+   complex(kind=Rkind) ,intent(inout)            :: Int
+   !Locals variabls ----------------------------------------------------------
+   complex(kind=Rkind), pointer                  :: psi_gb1(:, :),psi_gb2(:, :)
+   logical                                       :: Endloop_q
+   complex(kind=Rkind), allocatable              :: Intel(:)
+   real(kind=Rkind), allocatable                 :: Nel(:)
+   real(kind=Rkind)                              :: W
+   integer, allocatable                          :: Tab_iq(:)
+   integer                                       :: iq, inbe,inb,nq,nsurf,ndim
+   debug = Basis%debug .OR. Debug_Enabled()
+   IF (debug) THEN
+      write (out_unit, *) 'Beging Evaluating integral'
+      flush (out_unit)
+   END IF
+   nq = Basis%nq
+   nsurf = Basis%tab_basis(size(Basis%tab_basis))%nb
+   ndim = size(Basis%tab_basis) - 1
+   allocate (Nel(nsurf))
+   allocate (Intel(nsurf)) 
+   allocate (Tab_iq(ndim))
+   psi_gb1(1:nq,1:nsurf) => G1
+   psi_gb2(1:nq,1:nsurf) => G2
+ Nel(:) = ZERO
+ Intel(:)=ZERO
+ Int = ZERO
+ DO inbe = 1, Basis%tab_basis(size(Basis%tab_basis))%nb !electronic state
+    Intel(inbe) = CZERO
+    Call Init_tab_ind(Tab_iq, Basis%NDindexq)
+    iq = 0
+    DO
+       iq = iq + 1
+       CALL increase_NDindex(Tab_iq, Basis%NDindexq, Endloop_q)
+       IF (Endloop_q) exit
+      
+        W = ONE
+        DO inb = 1, ndim
+           W = W*Basis%tab_basis(inb)%w(tab_iq(inb))
+        END DO
+       Nel(inbe) = Nel(inbe) + REAL(CONJG(psi_gb1(iq, inbe))*psi_gb1(iq, inbe)*W,kind=Rkind)
+       Intel(inbe) = Intel(inbe) + REAL(CONJG(psi_gb1(iq, inbe))*psi_gb2(iq, inbe)*W,kind=Rkind)
+    END DO
+ END DO
+ Int = sum(Intel)/(Sum(Nel)**2)
+ Deallocate (Tab_iq)
+ Deallocate(Intel,Nel)
+ IF (debug) THEN
+    write (out_unit, *) 'END Evaluating integral'
+    flush (out_unit)
+ END IF
+END SUBROUTINE
+
+
+
+   SUBROUTINE eval_pics(psi,ib,t)
+      implicit none
+      TYPE(psi_t), intent(in)                     :: psi
+      integer,intent(in)                          :: ib
+      real(kind=Rkind) ,intent(in)                :: t
+      real(kind=Rkind)                            :: norm,n0,eps_t
+      integer                                     :: i
+       
+      norm = 0._Rkind
+      eps_t =ONETENTH**12
+      call Calc_Norm_OF_Psi(psi,n0)
+       do i =2,size(psi%CVec)
+         norm = norm + abs(psi%CVec(i))**2
+       end do
+
+       if ( t<=eps_t ) then
+         write(ib,*) t, abs(n0**2-abs(psi%CVec(1))**2) , ZERO  !FMT= "(F20.10,F20.15,F20.18)"
+       else
+         write(ib,*) t, abs(n0**2-abs(psi%CVec(1))**2) , norm
+       end if
+
+   END SUBROUTINE
+
+
+
+
+
 
 
  

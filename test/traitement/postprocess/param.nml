@@ -1,0 +1,13 @@
+&param
+  file_auto     = 'auto_cor.txt'
+  file_spectrum = 'file_spectrum.txt'
+  file_parameters = 'spectrum_parameters.txt'
+  ! Pas de discretisation en energie. A adapter aux unites du probleme.
+  dE            = -1.0
+  Emin          = 0.0
+  ! Emax=-1.0 signifie : calcul automatique jusqu'a la limite de Nyquist.
+  Emax          = -1.0
+  conv_E        = 1.0
+  conv_t        = 1.0
+  n_filter      = 1
+/

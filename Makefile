@@ -95,6 +95,17 @@ ifneq ($(ARPACK),$(filter $(ARPACK),0 1))
 endif
 AARPACK := $(ARPACK)
 
+# On macOS Apple Silicon, Homebrew keeps ARPACK and OpenBLAS in keg-only
+# prefixes.  Detect these prefixes when the user did not provide them on the
+# command line.  Explicit ARPACK_PREFIX/BLAS_PREFIX values always take
+# precedence, which also supports MacPorts and manual installations.
+ifeq ($(strip $(ARPACK_PREFIX)),)
+  ARPACK_PREFIX := $(shell if command -v brew >/dev/null 2>&1; then brew --prefix arpack 2>/dev/null; fi)
+endif
+ifeq ($(strip $(BLAS_PREFIX)),)
+  BLAS_PREFIX := $(shell if command -v brew >/dev/null 2>&1; then brew --prefix openblas 2>/dev/null; fi)
+endif
+
 ifneq ($(INT),$(filter $(INT),4 8))
   $(info *********** INT (change default integer):        $(INT))
   $(info Possible values: 4, 8)
@@ -154,7 +165,7 @@ ifneq ($(EXTLIB_LIST),)
   EXTLib := $(shell for LLIB in $(EXTLIB_LIST) ; do echo $(ExtLibDIR)/$$LLIB"/lib"$$LLIB""$(ext_obj)".a" ; done)
 endif
 # We use the full TnunTana library
-EXTLib := $(MAIN_path)"/EXT_Lib/Tnum-Tana/libTnum-TanaFull"$(ext_obj)".a"
+EXTLib := $(MAIN_path)/EXT_Lib/Tnum-Tana/libTnum-TanaFull$(ext_obj).a
 # special files
 EXT_SRC  := calc_f2_f1Q.f90 Sub_X_TO_Q_ana.f90 Calc_Tab_dnQflex.f90 read_para.f90
 EXT_OBJ  := $(EXT_SRC:.f90=.o)
@@ -171,7 +182,26 @@ EXT_OBJ  := $(addprefix $(OBJ_DIR)/,$(EXT_OBJ))
 FFAGS +=  $(EXTMod) 
 
 LIBS := $(EXTLib)
-LDFLAGS := $(LIBS) -llapack -lblas
+# macOS ld does not always rescan all members of the monolithic Tnum-Tana
+# archive.  This leaves QDUtil/Tnum symbols unresolved even though the
+# corresponding object files are present in the archive.  force_load is
+# restricted to Darwin; GNU ld on Linux keeps the normal archive behavior.
+HOST_OS := $(shell uname -s)
+ifeq ($(HOST_OS),Darwin)
+  LDFLAGS := -Wl,-force_load,$(EXTLib)
+else
+  LDFLAGS := $(LIBS)
+endif
+ifneq ($(strip $(ARPACK_PREFIX)),)
+  LDFLAGS += -L$(ARPACK_PREFIX)/lib
+endif
+ifneq ($(strip $(BLAS_PREFIX)),)
+  LDFLAGS += -L$(BLAS_PREFIX)/lib
+endif
+LDFLAGS += -llapack -lblas
+ifeq ($(ARPACK),1)
+  LDFLAGS += -larpack
+endif
 
 
 # =====================================================================================
@@ -183,6 +213,15 @@ FFLAGS := -cpp -Wall -Wextra -Wimplicit-interface \
           -ffree-line-length-none \
           -Warray-temporaries \
           -J$(MOD_DIR) $(EXTMod)
+ifeq ($(ARPACK),1)
+  FFLAGS += -D__ARPACK=1
+endif
+ifneq ($(strip $(ARPACK_PREFIX)),)
+  FFLAGS += -I$(ARPACK_PREFIX)/include
+endif
+ifneq ($(strip $(BLAS_PREFIX)),)
+  FFLAGS += -I$(BLAS_PREFIX)/include
+endif
 #=================================================================================
 #=================================================================================
 #=================================================================================
@@ -217,14 +256,15 @@ TARGET = $(MAIN).x
 # Source and object files
 # =====================================================================================
 
-LIBSRC = Molec_m.f90 NDindex_m.f90 poly0rtho_m.f90 \
-         SmolyakSparseGridMetadata_m.f90 Basis_m.f90 psi_m.f90 \
+LIBSRC = InputStaging_m.f90 NUFFT_m.f90 SplitOperator_m.f90 Molec_m.f90 NDindex_m.f90 NDindex_TestSupport_m.f90 poly0rtho_m.f90 \
+         SmolyakSparseGridMetadata_m.f90 SmolyakSparseBasisAlgebra_m.f90 Basis_m.f90 psi_m.f90 Checkpoint_m.f90 \
          Ana_psi_m.f90 lanczos_m.f90 Op_m.f90 param_WP0_m.f90 \
          Auto_corr_m.f90 Propa_m.f90 Hagedorn_m.f90 \
          sub_propa_m.f90 Sub_Vp_m.f90 \
-         HagedornLinalg_m.f90 HagedornOverlap_m.f90 \
+         HagedornLinalg_m.f90 HagedornQuadrature_m.f90 HagedornOverlap_m.f90 \
          NDindex_hagedorn_m.f90 HagedornBasis_m.f90 \
-         HagedornHamiltonian_m.f90
+         HagedornHamiltonian_m.f90 Initial_GWP_Basis_m.f90 TISE_m.f90 HamiltonianSpectrum_m.f90 \
+         HagedornDiracFrenkel_m.f90
 
 # Object files
 OBJ0 = $(LIBSRC:.f90=.o)
@@ -272,6 +312,31 @@ $(OBJ_DIR)/%.o: $(SRC_DIR)/%.f90 | $(OBJ_DIR)
 $(TARGET):                    | $(OBJ_DIR) $(EXTLib)
 $(OBJ):                       | $(OBJ_DIR) $(EXTLib)
 
+$(OBJ_DIR)/Initial_GWP_Basis_m.o: \
+    $(OBJ_DIR)/Basis_m.o \
+    $(OBJ_DIR)/param_WP0_m.o
+
+$(OBJ_DIR)/HamiltonianSpectrum_m.o: \
+    $(OBJ_DIR)/Op_m.o \
+    $(OBJ_DIR)/Ana_psi_m.o \
+    $(OBJ_DIR)/Basis_m.o \
+    $(OBJ_DIR)/psi_m.o
+
+$(OBJ_DIR)/TISE_m.o: \
+    $(OBJ_DIR)/Op_m.o \
+    $(OBJ_DIR)/psi_m.o \
+    $(OBJ_DIR)/Basis_m.o
+
+$(OBJ_DIR)/HamiltonianSpectrum_m.o: $(OBJ_DIR)/TISE_m.o
+$(OBJ_DIR)/$(MAIN).o: $(OBJ_DIR)/TISE_m.o
+$(OBJ_DIR)/sub_propa_m.o: $(OBJ_DIR)/TISE_m.o
+
+$(OBJ_DIR)/HagedornDiracFrenkel_m.o: \
+    $(OBJ_DIR)/HagedornQuadrature_m.o \
+    $(OBJ_DIR)/HagedornLinalg_m.o \
+    $(OBJ_DIR)/NDindex_hagedorn_m.o \
+    $(OBJ_DIR)/HagedornBasis_m.o
+
 $(OBJ_DIR)/Ana_psi_m.o: \
     $(OBJ_DIR)/Basis_m.o \
     $(OBJ_DIR)/NDindex_m.o \
@@ -283,12 +348,18 @@ $(OBJ_DIR)/Auto_corr_m.o: \
     $(OBJ_DIR)/Hagedorn_m.o \
     $(OBJ_DIR)/sub_propa_m.o
 
+$(OBJ_DIR)/SplitOperator_m.o: \
+    $(OBJ_DIR)/NUFFT_m.o
+
 $(OBJ_DIR)/Basis_m.o: \
+    $(OBJ_DIR)/NUFFT_m.o \
     $(OBJ_DIR)/NDindex_m.o \
     $(OBJ_DIR)/poly0rtho_m.o \
     $(OBJ_DIR)/SmolyakSparseGridMetadata_m.o
 
 $(OBJ_DIR)/Hagedorn_m.o: \
+    $(OBJ_DIR)/HagedornBasis_m.o \
+    $(OBJ_DIR)/HagedornLinalg_m.o \
     $(OBJ_DIR)/Basis_m.o \
     $(OBJ_DIR)/psi_m.o \
     $(OBJ_DIR)/Op_m.o \
@@ -301,16 +372,12 @@ $(OBJ_DIR)/HagedornBasis_m.o: \
     $(OBJ_DIR)/HagedornLinalg_m.o \
     $(OBJ_DIR)/NDindex_hagedorn_m.o
 
-$(OBJ_DIR)/HagedornDiracFrenkel_m.o: \
-    $(OBJ_DIR)/HagedornLinalg_m.o \
-    $(OBJ_DIR)/NDindex_hagedorn_m.o \
-    $(OBJ_DIR)/HagedornBasis_m.o
-
 $(OBJ_DIR)/HagedornHamiltonian_m.o: \
     $(OBJ_DIR)/HagedornLinalg_m.o \
     $(OBJ_DIR)/HagedornBasis_m.o
 
 $(OBJ_DIR)/HagedornOverlap_m.o: \
+    $(OBJ_DIR)/HagedornLinalg_m.o \
     $(OBJ_DIR)/HagedornBasis_m.o \
     $(OBJ_DIR)/NDindex_hagedorn_m.o \
     $(OBJ_DIR)/poly0rtho_m.o
@@ -321,6 +388,7 @@ $(OBJ_DIR)/lanczos_m.o: \
     $(OBJ_DIR)/Basis_m.o
 
 $(OBJ_DIR)/Op_m.o: \
+    $(OBJ_DIR)/SmolyakSparseBasisAlgebra_m.o \
     $(OBJ_DIR)/Basis_m.o \
     $(OBJ_DIR)/SmolyakSparseGridMetadata_m.o \
     $(OBJ_DIR)/Ana_psi_m.o \
@@ -328,6 +396,7 @@ $(OBJ_DIR)/Op_m.o: \
     $(OBJ_DIR)/psi_m.o
 
 $(OBJ_DIR)/Propa_m.o: \
+    $(OBJ_DIR)/Checkpoint_m.o \
     $(OBJ_DIR)/psi_m.o \
     $(OBJ_DIR)/Op_m.o \
     $(OBJ_DIR)/Ana_psi_m.o \
@@ -337,16 +406,28 @@ $(OBJ_DIR)/Propa_m.o: \
     $(OBJ_DIR)/sub_propa_m.o \
     $(OBJ_DIR)/Basis_m.o
 
+$(OBJ_DIR)/Checkpoint_m.o: \
+    $(OBJ_DIR)/psi_m.o \
+    $(OBJ_DIR)/Basis_m.o
+
 $(OBJ_DIR)/psi_m.o: \
     $(OBJ_DIR)/param_WP0_m.o \
     $(OBJ_DIR)/Basis_m.o \
+    $(OBJ_DIR)/SmolyakSparseBasisAlgebra_m.o \
     $(OBJ_DIR)/SmolyakSparseGridMetadata_m.o \
+    $(OBJ_DIR)/NDindex_m.o
+
+$(OBJ_DIR)/NDindex_TestSupport_m.o: \
     $(OBJ_DIR)/NDindex_m.o
 
 $(OBJ_DIR)/SmolyakSparseGridMetadata_m.o: \
     $(OBJ_DIR)/NDindex_m.o
 
+$(OBJ_DIR)/SmolyakSparseBasisAlgebra_m.o: \
+    $(OBJ_DIR)/SmolyakSparseGridMetadata_m.o
+
 $(OBJ_DIR)/sub_propa_m.o: \
+    $(OBJ_DIR)/SmolyakSparseBasisAlgebra_m.o \
     $(OBJ_DIR)/psi_m.o \
     $(OBJ_DIR)/Op_m.o \
     $(OBJ_DIR)/Ana_psi_m.o \
@@ -355,6 +436,7 @@ $(OBJ_DIR)/sub_propa_m.o: \
     $(OBJ_DIR)/Basis_m.o
 
 $(OBJ_DIR)/Sub_Vp_m.o: \
+    $(OBJ_DIR)/SmolyakSparseBasisAlgebra_m.o \
     $(OBJ_DIR)/NDindex_m.o \
     $(OBJ_DIR)/Op_m.o \
     $(OBJ_DIR)/Basis_m.o \
@@ -362,6 +444,9 @@ $(OBJ_DIR)/Sub_Vp_m.o: \
     $(OBJ_DIR)/poly0rtho_m.o
 
 $(OBJ_DIR)/TD_SCHROD.o: \
+    $(OBJ_DIR)/InputStaging_m.o \
+    $(OBJ_DIR)/Initial_GWP_Basis_m.o \
+    $(OBJ_DIR)/HamiltonianSpectrum_m.o \
     $(OBJ_DIR)/Basis_m.o \
     $(OBJ_DIR)/psi_m.o \
     $(OBJ_DIR)/Op_m.o \
@@ -386,7 +471,7 @@ $(OBJ_DIR):
 getlib: $(EXTLib)
 #
 $(EXTLib):
-	$(MAKE) -C $(ExtLibDIR) -f $(MAIN_path)/scripts/makefile-extlib LIBA=$@
+	$(MAKE) -C $(ExtLibDIR) -f $(MAIN_path)/scripts/makefile-extlib LIBA=$@ TD_SCHROD_ROOT=$(MAIN_path)
 # =====================================================================================
 # Cleaning
 # =====================================================================================

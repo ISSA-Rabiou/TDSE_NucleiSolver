@@ -18,10 +18,11 @@
 !README*
 !Makefile*
 !LICENSE*
-!LICENCE*
 
+
+# Scripts du projet : conserver tous les fichiers
 !scripts/
-!scripts/*
+!scripts/**
 
 # Conserver le dossier test et son architecture, mais pas les sorties
 # produites par les exécutions. Les sources, scripts et inputs restent suivis.
@@ -32,6 +33,18 @@
 !test/**/*.sh
 !test/**/README*
 !test/**/Makefile
+
+# ============================================================
+# Post-traitement : conserver tous les fichiers sauf notebooks
+# ============================================================
+
+!test/traitement/
+!test/traitement/postprocess/
+!test/traitement/postprocess/**
+
+# Exclure les notebooks Jupyter
+test/traitement/postprocess/*.ipynb
+test/traitement/postprocess/**/*.ipynb
 
 # inputs0 se trouve dans test/. Ses fichiers .inp sont versionnés.
 # Les résultats produits dans inputs0/ sont explicitement exclus.

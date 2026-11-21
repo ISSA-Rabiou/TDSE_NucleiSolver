@@ -33,6 +33,10 @@ zipfile    := $(LibName).zip
 LibDir     := $(LibName)_loc
 
 $(LIBA): $(LibName)
+	@if [ "$(LibName)" = "Tnum-Tana" ]; then \
+	  python3 "$(TD_SCHROD_ROOT)/scripts/apply_tnum_bunchpoly_fix.py" \
+	    "$(LibDir)/SRC/Source_TnumTana_Coord/Qtransfo/BunchPolyTransfo.f90"; \
+	fi
 	$(MAKE) -C $(LibDir) lib
 
 $(LibName): $(LibDir)

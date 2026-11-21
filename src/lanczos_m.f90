@@ -71,7 +71,7 @@ SUBROUTINE build_tridiag(alpha, beta, nb_k, eigvals, eigvecs, info)
 
   REAL(KIND=Rkind), ALLOCATABLE         :: T(:,:)
   INTEGER                               :: i
-  LOGICAL, PARAMETER                    :: debug=.FALSE.
+
 
   info = 0
 
@@ -94,14 +94,14 @@ SUBROUTINE build_tridiag(alpha, beta, nb_k, eigvals, eigvecs, info)
   END DO
 
   ! Optional: print T for debug
-  IF (debug) THEN
+  IF (Debug_Enabled()) THEN
     CALL Write_VecMat(T, out_unit, nb_k/2, info='T (tridiagonal)')
     WRITE(out_unit, *) " "
   END IF
 
   ! Diagonalisation : utilise ta routine existante 'diagonalization'
   ! signature attendue : diagonalization(T, eigvals, eigvecs, nb_k)
-  CALL diagonalization(T, eigvals, eigvecs, nb_k)
+  CALL diagonalization(T, eigvals, eigvecs, nb_k,sort=1)
 
   ! NOTE: diagonalization doit remplir eigvals (REAL) et eigvecs (REAL, colonnes).
   ! Si elle renvoie un code d'erreur, remonte-le via info (ici on suppose success)
@@ -128,7 +128,7 @@ SUBROUTINE build_propagator(eigvals, eigvecs, nb_k, dt, U_prop)
  
   COMPLEX(KIND=Rkind), ALLOCATABLE       :: tmpc(:,:)
   INTEGER                                :: j
-  LOGICAL, PARAMETER                     :: debug=.FALSE.
+
 
 
   IF (SIZE(eigvals) < nb_k .OR. SIZE(eigvecs,1) < nb_k .OR. &
@@ -151,7 +151,7 @@ SUBROUTINE build_propagator(eigvals, eigvecs, nb_k, dt, U_prop)
   U_prop = MATMUL(tmpc, CONJG(TRANSPOSE(CMPLX(eigvecs, ZERO, KIND=Rkind))))
 
   ! Debug printing
-  IF (debug) THEN
+  IF (Debug_Enabled()) THEN
     CALL Write_VecMat(U_prop, out_unit, nb_k/2, info='U_prop (Krylov propagator)')
     WRITE(out_unit, *) " "
   END IF
@@ -182,7 +182,7 @@ END SUBROUTINE build_propagator
  
    ! Erreur max (norme infinie, ici max |M - I|)
    err_max = MAXVAL(ABS(M - Iden))
-   print *,"err_max :" , err_max
+   IF (Debug_Enabled()) PRINT *, "err_max :", err_max
  
    DEALLOCATE(M, Iden)
  END SUBROUTINE check_unitarity
@@ -219,22 +219,34 @@ END SUBROUTINE Dotproduct
 !>   - k      [in]      (integer) : Current size of the Krylov basis Q.
 !>   - Basis  [in]      (Basis_t) : Basis of the wavefunction.
 !--------------------------------------------------------------------------------
-    SUBROUTINE Lanczos_step(H, Q, w_new, alpha, beta, k, Basis)
+    SUBROUTINE Lanczos_step(H, Q, w_new, alpha, beta, k, Basis, Hpsi_work, qpsi_work)
       IMPLICIT NONE
       TYPE(Op_t),     INTENT(IN)         :: H
       COMPLEX(KIND=Rkind), INTENT(IN)    :: Q(:,:)
       COMPLEX(KIND=Rkind), INTENT(OUT)   :: w_new(:)
       REAL(KIND=Rkind), INTENT(INOUT)    :: alpha(:), beta(:)
       INTEGER, INTENT(IN)                :: k
-      TYPE(Basis_t), INTENT(IN)          :: Basis
-    
+      TYPE(Basis_t), INTENT(IN), TARGET  :: Basis
+      TYPE(psi_t), INTENT(INOUT), OPTIONAL, TARGET :: Hpsi_work, qpsi_work
+
       ! Local variables
-      TYPE(psi_t)       :: Hpsi, q_k_psi
+      TYPE(psi_t), TARGET :: Hpsi_local, qpsi_local
+      TYPE(psi_t), POINTER :: Hpsi, q_k_psi
       REAL(KIND=Rkind)  :: norm_w
-    
-      ! Initialisation des vecteurs de travail
-      CALL init_psi(Hpsi,   Basis, cplx=.TRUE., grid=.FALSE.)
-      CALL init_psi(q_k_psi,Basis, cplx=.TRUE., grid=.FALSE.)
+      LOGICAL :: own_workspaces
+
+      IF (PRESENT(Hpsi_work) .NEQV. PRESENT(qpsi_work)) &
+         ERROR STOP 'Lanczos_step: both workspaces must be supplied together.'
+      own_workspaces = .NOT. PRESENT(Hpsi_work)
+      IF (own_workspaces) THEN
+         Hpsi => Hpsi_local
+         q_k_psi => qpsi_local
+         CALL init_psi(Hpsi, Basis, cplx=.TRUE., grid=.FALSE.)
+         CALL init_psi(q_k_psi, Basis, cplx=.TRUE., grid=.FALSE.)
+      ELSE
+         Hpsi => Hpsi_work
+         q_k_psi => qpsi_work
+      END IF
     
       ! q_k = colonne k de Q
       q_k_psi%CVec(:) = Q(:,k)
@@ -267,8 +279,10 @@ END SUBROUTINE Dotproduct
 
 
     
-      CALL dealloc_psi(Hpsi)
-      CALL dealloc_psi(q_k_psi)
+      IF (own_workspaces) THEN
+         CALL dealloc_psi(Hpsi)
+         CALL dealloc_psi(q_k_psi)
+      END IF
     
     END SUBROUTINE Lanczos_step  
     
@@ -312,7 +326,7 @@ FUNCTION EstimateDeltaPsiNorm(dt, betas, n) RESULT(norm_estimate)
   INTEGER :: i
 
   ! Initialize debug flag
-  debug = .TRUE.
+  debug = Debug_Enabled()
 
 
   !-----------------------------------------------
@@ -364,7 +378,7 @@ END FUNCTION EstimateDeltaPsiNorm
       IMPLICIT NONE
       TYPE(Op_t),     INTENT(IN)           :: H
       TYPE(psi_t),    INTENT(INOUT)        :: psi
-      TYPE(Basis_t),  INTENT(IN)           :: Basis
+      TYPE(Basis_t),  INTENT(IN), TARGET  :: Basis
       REAL(KIND=Rkind), INTENT(IN)         :: dt
       INTEGER, INTENT(IN)                  :: max_krylov
       REAL(KIND=Rkind), INTENT(IN)         :: tol
@@ -374,15 +388,24 @@ END FUNCTION EstimateDeltaPsiNorm
       REAL(KIND=Rkind),    ALLOCATABLE     :: alpha(:), beta(:), eigvals(:)
       REAL(KIND=Rkind),    ALLOCATABLE     :: eigvecs(:,:)
       COMPLEX(KIND=Rkind), ALLOCATABLE     :: U_prop(:,:), cvec_tmp(:)
-      INTEGER                              :: n, iter, nb_k, info
-      REAL(KIND=Rkind)                     :: norm_psi,estimate_error
-      LOGICAL, PARAMETER                   :: debug=.TRUE.
+      TYPE(psi_t)                          :: Hpsi_work, qpsi_work
+      INTEGER                              :: n, iter, nb_k, info, kmax
+      REAL(KIND=Rkind)                     :: norm_psi, estimate_error, breakdown_tol
+
     
+      IF (.NOT. ALLOCATED(psi%CVec)) ERROR STOP 'march_mSIL: psi coefficients are not allocated.'
+      IF (max_krylov < 1) ERROR STOP 'march_mSIL: max_krylov must be positive.'
+      IF (tol <= ZERO) ERROR STOP 'march_mSIL: tolerance must be positive.'
       n = SIZE(psi%CVec)
+      kmax = MIN(max_krylov, n)
+      IF (n < 1) ERROR STOP 'march_mSIL: empty coefficient vector.'
     
       ! Allocation
-      ALLOCATE(K_basis(n,max_krylov), w_new(n))
-      ALLOCATE(alpha(max_krylov), beta(max_krylov))
+      ALLOCATE(K_basis(n,kmax), w_new(n))
+      ALLOCATE(alpha(kmax), beta(kmax+1))
+      beta = ZERO
+      CALL init_psi(Hpsi_work, Basis, cplx=.TRUE., grid=.FALSE.)
+      CALL init_psi(qpsi_work, Basis, cplx=.TRUE., grid=.FALSE.)
     
       ! --- Normalisation initiale ---
       call Calc_Norm_OF_Psi(psi, norm_psi)
@@ -394,25 +417,33 @@ END FUNCTION EstimateDeltaPsiNorm
       END IF
     
       ! --- Lanczos iterations ---
-      DO iter = 1, max_krylov
-        CALL Lanczos_step(H, K_basis, w_new, alpha, beta, iter, Basis)
-    
-        ! Critère d’arrêt : si la norme de w_new est trop petite
-         CALL Dotproduct(w_new(:),w_new(:),estimate_error)
-         estimate_error = SQRT(estimate_error)*(dt**iter)/Factorial(iter)
-        IF (iter < max_krylov .AND. estimate_error > tol) THEN
-          K_basis(:, iter+1) = w_new
-        ELSE 
-            nb_k = iter
-            WRITE(out_unit, *) 'Converged after', nb_k, 'iterations.'
-            EXIT
-        END IF
+      estimate_error = ONE
+      nb_k = kmax
+      DO iter = 1, kmax
+        CALL Lanczos_step(H, K_basis, w_new, alpha, beta, iter, Basis, Hpsi_work, qpsi_work)
 
-        IF (iter == max_krylov) THEN
-          nb_k = max_krylov   ! si pas de convergence avant la limite
-          WRITE(out_unit,*) "Warning: max_krylov :",max_krylov," reached"
+        ! Leading Lanczos/Taylor remainder estimate:
+        ! |dt|^m/m! * product(beta_2,...,beta_{m+1}). Lanczos_step returns
+        ! w_new normalized, so use beta(m+1), not norm(w_new), as the residual.
+        estimate_error = estimate_error * ABS(dt) * beta(iter+1) / REAL(iter, KIND=Rkind)
+        breakdown_tol = 100.0_Rkind * EPSILON(ONE) * &
+             MAX(ONE, ABS(alpha(iter)), ABS(beta(iter)))
+
+        IF (beta(iter+1) <= breakdown_tol) THEN
+          nb_k = iter
+          IF (Debug_Enabled()) WRITE(out_unit, *) 'Lanczos invariant subspace reached at', nb_k
+          EXIT
+        ELSE IF (estimate_error <= tol) THEN
+          nb_k = iter
+          IF (Debug_Enabled()) WRITE(out_unit, *) 'Converged after', nb_k, 'iterations; estimate=', estimate_error
+          EXIT
+        ELSE IF (iter == kmax) THEN
+          nb_k = iter
+          WRITE(out_unit,*) 'Warning: SIL reached Krylov limit ', kmax, '; estimated error=', estimate_error
           EXIT
         END IF
+
+        K_basis(:, iter+1) = w_new
       END DO
     
       ALLOCATE(eigvals(nb_k), eigvecs(nb_k,nb_k))
@@ -428,7 +459,7 @@ END FUNCTION EstimateDeltaPsiNorm
       ! --- Construction du propagateur réduit ---
       CALL build_propagator(eigvals, eigvecs, nb_k, dt, U_prop)
 
-      IF(debug) CALL check_unitarity(U_prop, nb_k)
+      IF (Debug_Enabled()) CALL check_unitarity(U_prop, nb_k)
     
       ! --- Projection de psi dans la base de Krylov ---
       cvec_tmp(1:nb_k) = MATMUL(CONJG(TRANSPOSE(K_basis(:,1:nb_k))), psi%CVec(:))
@@ -440,6 +471,8 @@ END FUNCTION EstimateDeltaPsiNorm
       psi%CVec(:) = MATMUL(K_basis(:,1:nb_k), cvec_tmp(1:nb_k))
     
       ! --- Nettoyage ---
+      CALL dealloc_psi(Hpsi_work)
+      CALL dealloc_psi(qpsi_work)
       DEALLOCATE(K_basis, w_new, alpha, beta, eigvals, eigvecs, U_prop, cvec_tmp)
     
     END SUBROUTINE march_mSIL
@@ -467,7 +500,7 @@ END FUNCTION EstimateDeltaPsiNorm
      IMPLICIT NONE
      TYPE(Op_t),     INTENT(IN)              :: H
      TYPE(psi_t),    INTENT(IN)              :: psi
-     TYPE(Basis_t),  INTENT(IN)              :: Basis
+     TYPE(Basis_t),  INTENT(IN), TARGET      :: Basis
      INTEGER, INTENT(IN)                     :: max_krylov
      REAL(KIND=Rkind), INTENT(INOUT)         :: Gs_Energy
      TYPE(psi_t),    INTENT(INOUT)           :: Gs_Psi
@@ -478,58 +511,64 @@ END FUNCTION EstimateDeltaPsiNorm
      REAL(KIND=Rkind),    ALLOCATABLE        :: alpha(:), beta(:), eigvals(:)
      REAL(KIND=Rkind),    ALLOCATABLE        :: eigvecs(:,:)
      COMPLEX(KIND=Rkind), ALLOCATABLE        :: phi_0(:)
-     INTEGER                                 :: n, iter, nb_k, info
+     TYPE(psi_t)                             :: Hpsi_work, qpsi_work
+     INTEGER                                 :: n, iter, nb_k, info, kmax
      REAL(KIND=Rkind)                        :: norm_psi
      REAL(KIND=Rkind)                        :: min_eigval
      INTEGER                                 :: min_idx
-     REAL(KIND=Rkind)                        :: norm_w_new
-     LOGICAL, PARAMETER                      :: debug=.TRUE.
+
    
+     IF (.NOT. ALLOCATED(psi%CVec)) ERROR STOP 'find_ground_state_SIL: psi coefficients are not allocated.'
+     IF (.NOT. ALLOCATED(Gs_Psi%CVec)) ERROR STOP 'find_ground_state_SIL: Gs_Psi coefficients are not allocated.'
+     IF (max_krylov < 1) ERROR STOP 'find_ground_state_SIL: max_krylov must be positive.'
+     IF (tol <= ZERO) ERROR STOP 'find_ground_state_SIL: tolerance must be positive.'
      n = SIZE(psi%CVec)
+     kmax = MIN(max_krylov, n)
+     IF (SIZE(Gs_Psi%CVec) /= n) ERROR STOP 'find_ground_state_SIL: psi vector dimensions differ.'
    
-     IF (debug) THEN
+     IF (Debug_Enabled()) THEN
        WRITE(out_unit,*) "--- Starting find_ground_state_SIL ---"
        WRITE(out_unit,*) "max_krylov: ", max_krylov
        WRITE(out_unit,*) "tolerance: ", tol
      END IF
    
      ! Allocation ------------------------------------------------
-     ALLOCATE(K_basis(n,max_krylov), w_new(n))
-     ALLOCATE(alpha(max_krylov), beta(max_krylov))
+     ALLOCATE(K_basis(n,kmax), w_new(n))
+     ALLOCATE(alpha(kmax), beta(kmax+1))
+     beta = ZERO
+     CALL init_psi(Hpsi_work, Basis, cplx=.TRUE., grid=.FALSE.)
+     CALL init_psi(qpsi_work, Basis, cplx=.TRUE., grid=.FALSE.)
    
      ! --- Normalisation initiale ---
      CALL Calc_Norm_OF_Psi(psi, norm_psi)
      IF (norm_psi > ZERO) THEN
        K_basis(:,1) = psi%CVec / norm_psi
-       IF (debug) WRITE(out_unit,*) "Initial psi normalized. Norm = ", norm_psi
+       IF (Debug_Enabled()) WRITE(out_unit,*) "Initial psi normalized. Norm = ", norm_psi
      ELSE
        WRITE(out_unit,*) "Error: initial psi is zero vector"
        STOP "find_ground_state_SIL error"
      END IF
    
      ! --- Lanczos iterations ---
-     DO iter = 1, max_krylov
-       CALL Lanczos_step(H, K_basis, w_new, alpha, beta, iter, Basis)
-   
-       CALL Dotproduct(w_new, w_new, norm_w_new)
-       norm_w_new = SQRT(norm_w_new)/Factorial(iter)
-       
-       IF (debug) WRITE(out_unit,*) "Iteration ", iter, ": norm(w_new) = ", norm_w_new
-   
-       ! Stop condition for convergence
-       IF (norm_w_new < tol) THEN
+     nb_k = kmax
+     DO iter = 1, kmax
+       CALL Lanczos_step(H, K_basis, w_new, alpha, beta, iter, Basis, Hpsi_work, qpsi_work)
+
+       IF (Debug_Enabled()) WRITE(out_unit,*) 'Iteration ', iter, ': Lanczos residual beta=', beta(iter+1)
+
+       ! Stop only when the Krylov space is numerically invariant. The old test
+       ! used ||w_new|| after Lanczos_step normalized it, so it was not a residual.
+       IF (beta(iter+1) <= tol * MAX(ONE, ABS(alpha(iter)), ABS(beta(iter)))) THEN
          nb_k = iter
-         IF (debug) WRITE(out_unit, *) 'Converged after', nb_k, 'iterations.'
+         IF (Debug_Enabled()) WRITE(out_unit, *) 'Krylov invariant subspace reached after', nb_k, 'iterations.'
          EXIT
        END IF
-   
-       IF (iter < max_krylov) THEN
+
+       IF (iter < kmax) THEN
          K_basis(:, iter+1) = w_new
-       END IF
-   
-       IF (iter == max_krylov) THEN
-         nb_k = max_krylov   ! if no convergence before the limit
-         IF (debug) WRITE(out_unit,*) "Warning: max_krylov :",max_krylov," reached, stopping."
+       ELSE
+         WRITE(out_unit,*) 'Warning: ground-state SIL reached Krylov limit ', kmax
+         nb_k = iter
          EXIT
        END IF
      END DO
@@ -537,7 +576,7 @@ END FUNCTION EstimateDeltaPsiNorm
      ALLOCATE(eigvals(nb_k), eigvecs(nb_k,nb_k))
    
      ! --- Construction and diagonalisation of T ---
-     IF (debug) WRITE(out_unit,*) "Building and diagonalizing tridiagonal matrix of size ", nb_k
+     IF (Debug_Enabled()) WRITE(out_unit,*) "Building and diagonalizing tridiagonal matrix of size ", nb_k
      CALL build_tridiag(alpha, beta, nb_k, eigvals, eigvecs, info)
      IF (info /= 0) THEN
        WRITE(out_unit,*) "Error in build_tridiag, info=", info
@@ -555,7 +594,7 @@ END FUNCTION EstimateDeltaPsiNorm
      END DO
    
      Gs_Energy = min_eigval
-     IF (debug) WRITE(out_unit, '(A,F20.15)') "Ground state energy found: ", Gs_Energy
+     IF (Debug_Enabled()) WRITE(out_unit, '(A,F20.15)') "Ground state energy found: ", Gs_Energy
    
      ALLOCATE(phi_0(nb_k))
      phi_0(:) = eigvecs(:, min_idx)
@@ -563,9 +602,11 @@ END FUNCTION EstimateDeltaPsiNorm
      ! --- Reconstruction of the ground state vector ---
      Gs_Psi%CVec(:) = MATMUL(K_basis(:,1:nb_k), phi_0(:))
    
-     IF (debug) WRITE(out_unit,*) "--- Exiting find_ground_state_SIL ---"
+     IF (Debug_Enabled()) WRITE(out_unit,*) "--- Exiting find_ground_state_SIL ---"
    
      ! --- Nettoyage ---
+     CALL dealloc_psi(Hpsi_work)
+     CALL dealloc_psi(qpsi_work)
      DEALLOCATE(K_basis, w_new, alpha, beta, eigvals, eigvecs, phi_0)
    
    END SUBROUTINE find_ground_state_SIL

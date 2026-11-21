@@ -1,0 +1,25 @@
+! PSB3 3D, premiers niveaux propres vibroniques (dimensionner la base après test).
+&coordQMLpot
+  coord_type='CC'
+  sym_type='SYM'
+  model_type='QML'
+  pot0=0.0
+/
+&potential
+  pot_name='PSB3'
+  ndim=3
+  nsurf=2
+  option=1
+  adiabatic=F
+  PubliUnit=F
+/
+&basis_nd name='dp' nb_basis=4 /
+&basis_nd name='HO' nb=20 nq=30 Q0=0.172459 SCALEQ=1.0 Imp_k=0.0 alpha=(1.0,0.0) /
+&basis_nd name='HO' nb=30 nq=40 Q0=-3.14 SCALEQ=1.0 Imp_k=0.0 alpha=(1.0,0.0) /
+&basis_nd name='HO' nb=24 nq=32 Q0=0.0 SCALEQ=1.0 Imp_k=0.0 alpha=(1.0,0.0) /
+&basis_nd name='el' nb=2 /
+&defGWP ndim=3 Elecindex=2 Coef=(1.0,0.0) source='input' /
+&defWP0 sigma=0.01 Beta=0.0 Qeq=0.172459 imp_k=0.0 gamma=0.0 /
+&defWP0 sigma=0.20 Beta=0.0 Qeq=-3.14 imp_k=0.0 gamma=0.0 /
+&defWP0 sigma=0.20 Beta=0.0 Qeq=0.0 imp_k=0.0 gamma=0.0 /
+&prop dynamics='TISE' tise_method='lanczos' tise_nstates=8 tise_tol=1.e-8 tise_max_iter=1000 energy_unit='cm-1' /

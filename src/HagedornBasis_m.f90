@@ -39,6 +39,7 @@ module HagedornBasis_m
   use HagedornLinalg_m
   use NDindex_hagedorn_m
   implicit none
+  public :: Cmat_to_QP
   private
 
   type, public :: HagedornBasis_t
@@ -653,5 +654,28 @@ contains
       val = val + x(i) * y(i)
     end do
   end function dot_no_conjg
+
+
+  subroutine Cmat_to_QP(Cmat, Qmat, Pmat)
+    complex(KIND=Rkind), intent(in) :: Cmat(:,:)
+    complex(KIND=Rkind), allocatable, intent(out) :: Qmat(:,:), Pmat(:,:)
+
+    integer :: ndim
+    complex(KIND=Rkind), allocatable :: ImC(:,:), sqrtImC(:,:)
+
+    ndim = size(Cmat,1)
+    if (size(Cmat,2) /= ndim) error stop 'Cmat_to_QP: matrix must be square.'
+
+    allocate(ImC(ndim,ndim))
+    ImC = (Cmat - conjg(transpose(Cmat))) / (TWO*EYE)
+
+    sqrtImC = matrix_sqrt_hermitian(ImC)
+    Qmat = matrix_inverse_c(sqrtImC)
+
+    allocate(Pmat(ndim,ndim))
+    Pmat = matmul(Cmat,Qmat)
+  end subroutine Cmat_to_QP
+
+
 
 end module HagedornBasis_m

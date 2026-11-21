@@ -124,7 +124,6 @@ MODULE SmolyakSparseGridMetadata_m
   PUBLIC :: GetSmolyakPackedBasisSize, GetSmolyakPackedGridSize
   PUBLIC :: PackFullBasisToSmolyakTerms, UnpackSmolyakTermsToFullBasis
   PUBLIC :: CombineSmolyakBlocksToFull
-  PUBLIC :: DotSmolyakBasis
 
 CONTAINS
 
@@ -635,20 +634,6 @@ CONTAINS
     TYPE(SmolyakSparseGridDescriptor_t), INTENT(IN) :: Descriptor
     CALL CombineSmolyakBlocksToFull(full, packed, Descriptor)
   END SUBROUTINE UnpackSmolyakTermsToFullBasis
-
-  FUNCTION DotSmolyakBasis(a, b, Descriptor) RESULT(value)
-    COMPLEX(KIND=Rkind), INTENT(IN) :: a(:), b(:)
-    TYPE(SmolyakSparseGridDescriptor_t), INTENT(IN) :: Descriptor
-    COMPLEX(KIND=Rkind) :: value
-    COMPLEX(KIND=Rkind), ALLOCATABLE :: fa(:), fb(:)
-    ALLOCATE(fa(Descriptor%nb*MAX(1,Descriptor%nsurf)))
-    ALLOCATE(fb(SIZE(fa)))
-    CALL UnpackSmolyakTermsToFullBasis(fa,a,Descriptor)
-    CALL UnpackSmolyakTermsToFullBasis(fb,b,Descriptor)
-    value=DOT_PRODUCT(fa,fb)
-    DEALLOCATE(fa,fb)
-  END FUNCTION DotSmolyakBasis
-
   !=========================================================================
   ! The expand sparse basis to full basis function
   !

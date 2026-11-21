@@ -6,7 +6,7 @@ module Auto_corr_m
    Use sub_propa_m
 
    implicit none
-   public :: Calc_Auto_corr,test_write_cplx,eval_pics
+   public :: Calc_Auto_corr,test_write_cplx
 
 contains
 
@@ -177,31 +177,6 @@ contains
         end do
 
    END SUBROUTINE
-
-
-   SUBROUTINE eval_pics(psi,ib,t)
-      implicit none
-      TYPE(psi_t), intent(in)                     :: psi
-      integer,intent(in)                          :: ib
-      real(kind=Rkind) ,intent(in)                :: t
-      real(kind=Rkind)                            :: norm,n0
-      integer                                     :: i
-       
-      norm = 0._Rkind
-      call Calc_Norm_OF_Psi(psi,n0)
-       do i =2,size(psi%CVec)
-         norm = norm + abs(psi%CVec(i))**2
-       end do
-
-       if ( t==0 ) then
-         write(ib,*) t, abs(n0**2-abs(psi%CVec(1))**2) , ZERO  !FMT= "(F20.10,F20.15,F20.18)"
-       else
-         write(ib,*) t, abs(n0**2-abs(psi%CVec(1))**2) , norm
-       end if
-
-   END SUBROUTINE
-
-
    !SUBROUTINE eval_pics_temp(psi,ib,t)
    !   implicit none
    !   TYPE(psi_t), intent(in)                     :: psi

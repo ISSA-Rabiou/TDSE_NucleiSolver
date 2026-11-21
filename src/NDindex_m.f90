@@ -16,7 +16,7 @@ MODULE NDindex_m
     INTEGER, ALLOCATABLE          :: NDend(:)
   END TYPE NDindex_t
 
-  PUBLIC :: increase_NDindex, Init_tab_ind, Testindex, Init_NDindex
+  PUBLIC :: increase_NDindex, Init_tab_ind, Init_NDindex
   PUBLIC :: dealloc_NDindex, Write_NDindex
 
 CONTAINS
@@ -118,19 +118,4 @@ CONTAINS
     NDindex%qmin = 0
     NDindex%qmax = -1
   END SUBROUTINE dealloc_NDindex
-
-  SUBROUTINE Testindex(NDindex)
-    TYPE(NDindex_t), INTENT(IN) :: NDindex
-    INTEGER, ALLOCATABLE :: Tab_ind(:)
-    LOGICAL :: Endloop
-    ALLOCATE(Tab_ind(NDindex%Ndim))
-    CALL Init_tab_ind(Tab_ind, NDindex)
-    DO
-      CALL increase_NDindex(Tab_ind, NDindex, Endloop)
-      IF (Endloop) EXIT
-      WRITE(out_unit,*) Tab_ind
-    END DO
-    DEALLOCATE(Tab_ind)
-  END SUBROUTINE Testindex
-
 END MODULE NDindex_m

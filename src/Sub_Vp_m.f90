@@ -2,6 +2,7 @@ MODULE Sub_Vp_m
    USE QDUtil_m
    USE NDindex_m
    USE Op_m
+   USE SmolyakSparseBasisAlgebra_m, ONLY: DotSmolyakBasis
    USE Basis_m
    USE psi_m
    USE polyortho_m, ONLY : hercom, poly_Hermite

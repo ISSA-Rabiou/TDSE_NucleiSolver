@@ -9,14 +9,9 @@ module HagedornLinalg_m
   !!  Main services
   !!    * numerical kind and constants
   !!    * complex matrix inversion and determinant through LU factorization
-  !!    * symmetric eigensolver wrapper for Gauss-Hermite quadrature
+  !!    * Hermitian positive-definite matrix square root
   !!    * Frobenius norms and admissibility diagnostics for (Q,P)
-  !!    * tensor-product Gauss-Hermite quadrature grids
-  !!
-  !!  Mathematical conventions
-  !!    The 1D Gauss-Hermite rule produced here integrates
-  !!       ∫_{-∞}^{∞} exp(-x^2) f(x) dx
-  !!    with the physicists' Hermite normalization.
+  !!    * generic matrix norms and admissibility diagnostics for (Q,P)
   !!
   !!  References
   !!    * Golub & Welsch, Calculation of Gauss quadrature rules, Math. Comp. 1969.
@@ -28,10 +23,8 @@ module HagedornLinalg_m
 
   public :: eye_c, eye_r
   public :: frob_norm_c, frob_norm_r
-  public :: matrix_inverse_c, determinant_c
+  public :: matrix_inverse_c, determinant_c, matrix_sqrt_hermitian
   public :: check_hagedorn_admissibility
-  public :: gauss_hermite_rule
-  public :: tensor_product_grid
   public :: max_abs_c
 
   interface
@@ -52,15 +45,16 @@ module HagedornLinalg_m
       integer, intent(out) :: info
     end subroutine zgetri
 
-    subroutine dsyev(jobz, uplo, n, a, lda, w, work, lwork, info)
+    subroutine zheev(jobz, uplo, n, a, lda, w, work, lwork, rwork, info)
       import :: Rkind
       character(len=1), intent(in) :: jobz, uplo
       integer, intent(in) :: n, lda, lwork
-      real(KIND=Rkind), intent(inout) :: a(lda, *)
+      complex(KIND=Rkind), intent(inout) :: a(lda,*)
       real(KIND=Rkind), intent(out) :: w(*)
-      real(KIND=Rkind), intent(inout) :: work(*)
+      complex(KIND=Rkind), intent(inout) :: work(*)
+      real(KIND=Rkind), intent(inout) :: rwork(*)
       integer, intent(out) :: info
-    end subroutine dsyev
+    end subroutine zheev
   end interface
 
 contains
@@ -190,95 +184,53 @@ contains
     ok = (residual_symp <= threshold) .and. (residual_norm <= threshold)
   end subroutine check_hagedorn_admissibility
 
-  subroutine gauss_hermite_rule(n, x, w)
-    !!---------------------------------------------------------------------
-    !! Compute the n-point Gauss-Hermite quadrature rule for the weight
-    !! exp(-x^2) by diagonalizing the Jacobi matrix of Hermite polynomials.
-    !!---------------------------------------------------------------------
-    integer, intent(in) :: n
-    real(KIND=Rkind), allocatable, intent(out) :: x(:), w(:)
-    real(KIND=Rkind), allocatable :: jmat(:,:), evals(:), work(:)
-    real(KIND=Rkind) :: query(1)
-    integer :: info, lwork, k
+  function matrix_sqrt_hermitian(A) result(S)
+    complex(KIND=Rkind), intent(in) :: A(:,:)
+    complex(KIND=Rkind), allocatable :: S(:,:)
 
-    if (n <= 0) error stop 'gauss_hermite_rule: n must be positive.'
+    integer :: n, info, lwork, i
+    complex(KIND=Rkind), allocatable :: U(:,:), work(:)
+    real(KIND=Rkind), allocatable :: eig(:), rwork(:)
+    complex(KIND=Rkind) :: work_query(1)
 
-    allocate(jmat(n,n), evals(n), x(n), w(n))
-    jmat = ZERO
-    do k = 1, n-1
-      jmat(k, k+1) = sqrt(real(k,Rkind) / 2.0_Rkind)
-      jmat(k+1, k) = jmat(k, k+1)
-    end do
+    n = size(A,1)
+    if (size(A,2) /= n) error stop 'matrix_sqrt_hermitian: matrix must be square.'
+
+    allocate(U(n,n), eig(n), rwork(max(1,3*n-2)))
+    U = A
 
     lwork = -1
-    call dsyev('V', 'U', n, jmat, n, evals, query, lwork, info)
-    lwork = max(1, int(query(1)))
+    call zheev('V','U',n,U,n,eig,work_query,lwork,rwork,info)
+    if (info /= 0) error stop 'matrix_sqrt_hermitian: workspace query failed.'
+
+    lwork = max(1, int(real(work_query(1), KIND=Rkind)))
     allocate(work(lwork))
-    call dsyev('V', 'U', n, jmat, n, evals, work, lwork, info)
-    if (info /= 0) error stop 'gauss_hermite_rule: DSYEV failed.'
 
-    x = evals
-    do k = 1, n
-      w(k) = sqrt(PI) * jmat(1,k)**2
+    call zheev('V','U',n,U,n,eig,work,lwork,rwork,info)
+    if (info /= 0) error stop 'matrix_sqrt_hermitian: diagonalization failed.'
+
+    do i = 1, n
+      if (eig(i) <= ZERO) error stop 'matrix_sqrt_hermitian: matrix not positive definite.'
     end do
-  end subroutine gauss_hermite_rule
 
-  subroutine tensor_product_grid(nodes_1d, weights_1d, ndim, points, weights)
-    !!---------------------------------------------------------------------
-    !! Build the tensor-product grid from a common 1D rule.
-    !!
-    !! Input:
-    !!   nodes_1d, weights_1d : 1D quadrature nodes and weights.
-    !!   ndim                 : physical dimension.
-    !!
-    !! Output:
-    !!   points(ndim, npts)   : tensor-product grid.
-    !!   weights(npts)        : product weights.
-    !!---------------------------------------------------------------------
-    real(KIND=Rkind), intent(in) :: nodes_1d(:), weights_1d(:)
-    integer, intent(in) :: ndim
-    real(KIND=Rkind), allocatable, intent(out) :: points(:,:), weights(:)
-
-    integer :: n1d, npts, ipt
-    integer, allocatable :: idx(:)
-    logical :: done
-
-    if (size(nodes_1d) /= size(weights_1d)) error stop 'tensor_product_grid: inconsistent 1D rule.'
-    if (ndim <= 0) error stop 'tensor_product_grid: ndim must be positive.'
-
-    n1d = size(nodes_1d)
-    npts = n1d**ndim
-    allocate(points(ndim, npts), weights(npts), idx(ndim))
-
-    idx = 1
-    ipt = 0
-    done = .false.
-    do while (.not. done)
-      ipt = ipt + 1
-      weights(ipt) = ONE
-      points(:,ipt) = ZERO
-      points(:,ipt) = nodes_1d(idx)
-      weights(ipt) = product(weights_1d(idx))
-
-      call increment_multi_index(idx, n1d, done)
+    allocate(S(n,n))
+    S = CZERO
+    do i = 1, n
+      S = S + sqrt(eig(i)) * outer_product(U(:,i), conjg(U(:,i)))
     end do
+
   contains
-    subroutine increment_multi_index(ind, upper, finished)
-      integer, intent(inout) :: ind(:)
-      integer, intent(in) :: upper
-      logical, intent(out) :: finished
-      integer :: d
-
-      finished = .false.
-      ind(1) = ind(1) + 1
-      do d = 1, size(ind)-1
-        if (ind(d) > upper) then
-          ind(d) = 1
-          ind(d+1) = ind(d+1) + 1
-        end if
+    function outer_product(x, y) result(mat)
+      complex(KIND=Rkind), intent(in) :: x(:), y(:)
+      complex(KIND=Rkind) :: mat(size(x), size(y))
+      integer :: i, j
+      do i = 1, size(x)
+        do j = 1, size(y)
+          mat(i,j) = x(i) * y(j)
+        end do
       end do
-      if (ind(size(ind)) > upper) finished = .true.
-    end subroutine increment_multi_index
-  end subroutine tensor_product_grid
+    end function outer_product
+  end function matrix_sqrt_hermitian
+
 
 end module HagedornLinalg_m

@@ -3,7 +3,8 @@ module psi_m
    USE param_WP0_m
    USE Basis_m
    USE SmolyakSparseGridMetadata_m, ONLY: BASIS_LAYOUT_SMOLYAK_SPARSE, ExpandSparseBasisToFullBasis, &
-        RestrictFullBasisToSparseBasis, DotSmolyakBasis
+        RestrictFullBasisToSparseBasis
+   USE SmolyakSparseBasisAlgebra_m, ONLY: DotSmolyakBasis
    USE NDindex_m
    implicit none
 
@@ -114,7 +115,7 @@ contains
    
       INTEGER :: alloc_size   ! size of vector to allocate
       INTEGER :: istat        ! allocation status
-      LOGICAL , PARAMETER :: debug = .FALSE.
+      LOGICAL :: debug
       INTEGER :: i
    
       !-----------------------------------------------------------
@@ -129,6 +130,7 @@ contains
          WRITE(out_unit,*) 'ERROR in init_psi: the Basis is not initialized'
          RETURN
       ELSE
+         debug = Basis%debug .OR. Debug_Enabled()
          IF (debug) THEN
             WRITE(out_unit,*) 'Basis is allocated in Init_psi'
          END IF
@@ -275,13 +277,14 @@ contains
       LOGICAL,            INTENT(IN)           :: print_psi_grid, print_basis, psi_cplx, real_part
       INTEGER, OPTIONAL,  INTENT(IN)           :: int_print
       REAL(KIND=Rkind), OPTIONAL, INTENT(IN)   :: t
-      LOGICAL, PARAMETER                      :: debug = .true.
+      LOGICAL                                  :: debug
    
       ! Local temporary variables for conversion
       TYPE(psi_t) :: psi_g   ! Temporary wavefunction in grid representation
       TYPE(psi_t) :: psi_b   ! Temporary wavefunction in basis representation
       LOGICAL     :: alloc_g, alloc_b
    
+      debug = psi%Basis%debug .OR. Debug_Enabled()
       alloc_g = .FALSE.
       alloc_b = .FALSE.
    
@@ -404,10 +407,20 @@ contains
       complex(kind=Rkind), pointer                     :: BBB1(:, :, :), BBB2(:, :, :)
       complex(kind=Rkind), allocatable, target         :: B1(:), B2(:)
       real(kind=Rkind)                                 :: Norm0
-      logical, parameter                               :: debug = .true.
+      LOGICAL :: debug
       integer                                          :: inb, i1, i3, Ndim
       Integer, allocatable                             :: Ib1(:), Ib2(:), Ib3(:)
    
+      IF (.NOT. ASSOCIATED(psi_dt_1%Basis)) ERROR STOP 'Projection: source wavefunction has no basis.'
+      IF (.NOT. ASSOCIATED(psi_dt_2%Basis)) ERROR STOP 'Projection: destination wavefunction has no basis.'
+      IF (.NOT. ALLOCATED(psi_dt_1%CVec) .OR. .NOT. ALLOCATED(psi_dt_2%CVec)) &
+         ERROR STOP 'Projection: source and destination coefficients must be allocated.'
+      IF (.NOT. ALLOCATED(psi_dt_1%Basis%tab_basis) .OR. .NOT. ALLOCATED(psi_dt_2%Basis%tab_basis)) &
+         ERROR STOP 'Projection: primitive basis metadata must be allocated.'
+      IF (SIZE(psi_dt_1%Basis%tab_basis) /= SIZE(psi_dt_2%Basis%tab_basis)) &
+         ERROR STOP 'Projection: source and destination basis dimensions differ.'
+      IF (SIZE(psi_dt_1%Basis%tab_basis) < 2) ERROR STOP 'Projection: basis must contain nuclear dimensions.'
+      debug = psi_dt_1%Basis%debug .OR. Debug_Enabled()
       ! Hagedorn projection is defined in the complete tensor-product basis.
       ! For the legacy sparse layout, perform it on a dense temporary vector
       ! and restrict only after all one-dimensional projections are complete.
@@ -419,15 +432,29 @@ contains
          RETURN
       END IF
 
+      IF (SIZE(psi_dt_1%CVec) /= SIZE(psi_dt_2%CVec)) &
+         ERROR STOP 'Projection: dense source and destination coefficient sizes differ.'
+
       ! Compute index arrays for multidimensional basis representation
       call Calc_index(Ib1=Ib1, Ib2=Ib2, Ib3=Ib3, Basis=psi_dt_1%Basis)
    
       ! Determine the number of dimensions (basis functions)
       Ndim = size(psi_dt_1%Basis%tab_basis) - 1
+      DO inb = 1, Ndim
+         IF (.NOT. ALLOCATED(psi_dt_1%Basis%tab_basis(inb)%S)) &
+            ERROR STOP 'Projection: missing overlap matrix for a source primitive basis.'
+         IF (SIZE(psi_dt_1%Basis%tab_basis(inb)%S,1) /= psi_dt_1%Basis%tab_basis(inb)%nb .OR. &
+             SIZE(psi_dt_1%Basis%tab_basis(inb)%S,2) /= psi_dt_1%Basis%tab_basis(inb)%nb) &
+            ERROR STOP 'Projection: overlap matrix shape is inconsistent with the primitive basis.'
+         IF (psi_dt_1%Basis%tab_basis(inb)%nb /= psi_dt_2%Basis%tab_basis(inb)%nb) &
+            ERROR STOP 'Projection: source and destination primitive sizes differ.'
+      END DO
    
       ! Compute initial norm of psi_dt_1 for verification
-      call Calc_Norm_OF_psi(psi_dt_1, Norm0)
-      write (out_unit, *) 'Begin Hagedorn projection <psi|psi>=', Norm0
+      IF (debug) THEN
+         CALL Calc_Norm_OF_psi(psi_dt_1, Norm0)
+         WRITE(out_unit, *) 'Begin Hagedorn projection <psi|psi>=', Norm0
+      END IF
    
       ! Perform the Hagedorn projection
       if (Ndim == 1) then
@@ -486,14 +513,14 @@ contains
       END IF
    
       ! Compute final norm for verification
-      call Calc_Norm_OF_psi(psi_dt_2, Norm0)
+      IF (debug) CALL Calc_Norm_OF_psi(psi_dt_2, Norm0)
    
       ! Clean up dynamically allocated memory
       deallocate(Ib1, Ib2, Ib3)
       if (allocated(B1)) deallocate(B1)
       if (allocated(B2)) deallocate(B2)
    
-      write (out_unit, *) 'END Hagedorn projection <psi|psi>=', Norm0
+      IF (debug) WRITE(out_unit, *) 'END Hagedorn projection <psi|psi>=', Norm0
    END SUBROUTINE Projection
 
    SUBROUTINE Projection_dense_compat(psi_dt_2, psi_dt_1)
@@ -504,7 +531,9 @@ contains
       INTEGER, ALLOCATABLE :: Ib1(:), Ib2(:), Ib3(:)
       INTEGER :: ndim, inb, i1, i3, nfull
       REAL(KIND=Rkind) :: Norm0
+      LOGICAL :: debug
 
+      debug = psi_dt_1%Basis%debug .OR. Debug_Enabled()
       ndim = SIZE(psi_dt_1%Basis%tab_basis)-1
       nfull = psi_dt_1%Basis%nb * psi_dt_1%Basis%tab_basis(ndim+1)%nb
       ALLOCATE(CIn(nfull), COut(nfull))
@@ -557,10 +586,12 @@ contains
       ELSE
          psi_dt_2%CVec=COut
       END IF
-      CALL Calc_Norm_OF_Psi(psi_dt_1,Norm0)
-      WRITE(out_unit,*) 'Begin Hagedorn projection <psi|psi>=',Norm0
-      CALL Calc_Norm_OF_Psi(psi_dt_2,Norm0)
-      WRITE(out_unit,*) 'END Hagedorn projection <psi|psi>=',Norm0
+      IF (debug) THEN
+         CALL Calc_Norm_OF_Psi(psi_dt_1,Norm0)
+         WRITE(out_unit,*) 'Begin Hagedorn projection <psi|psi>=',Norm0
+         CALL Calc_Norm_OF_Psi(psi_dt_2,Norm0)
+         WRITE(out_unit,*) 'END Hagedorn projection <psi|psi>=',Norm0
+      END IF
       DEALLOCATE(CIn,COut,Ib1,Ib2,Ib3)
       IF (ALLOCATED(B1)) DEALLOCATE(B1)
    END SUBROUTINE Projection_dense_compat
@@ -571,13 +602,16 @@ contains
    complex(kind= Rkind), pointer                    :: BBB1(:, :, :), BBB2(:, :, :)
    complex(kind= Rkind), allocatable, target        :: B1(:), B2(:)
    real(kind= Rkind)                                :: Norm0
-   logical, parameter                               :: debug = .true.
+   LOGICAL :: debug
    integer                                          :: inb, i1, i3, Ndim
    Integer, allocatable                             :: Ib1(:), Ib2(:), Ib3(:)
+   debug = psi_dt_1%Basis%debug .OR. Debug_Enabled()
    call Calc_index(Ib1=Ib1, Ib2=Ib2, Ib3=Ib3, Basis=psi_dt_1%Basis)
    Ndim = size(psi_dt_1%Basis%tab_basis) - 1
-   call Calc_Norm_OF_psi(psi_dt_1,Norm0)
-   write (out_unit, *) 'Begin Hagedorn projection <psi|psi>=',Norm0
+   IF (debug) THEN
+      call Calc_Norm_OF_psi(psi_dt_1,Norm0)
+      write (out_unit, *) 'Begin Hagedorn projection <psi|psi>=',Norm0
+   END IF
    !write (out_unit, *) 'out',psi_dt_2%CVec
    !call  Write_VecMat(psi_dt_1%Basis%tab_basis(1)%S, out_unit, 5,  info='S')
    If (Ndim == 1) then
@@ -613,11 +647,11 @@ contains
          if (inb == Ndim) psi_dt_2%CVec = B1
       END DO
    END IF
-     call Calc_Norm_OF_psi(psi_dt_2,Norm0)
+     IF (debug) call Calc_Norm_OF_psi(psi_dt_2,Norm0)
      deallocate(Ib1, Ib2, Ib3)
      if(allocated(B1)) deallocate(B1)
      if(allocated(B2)) deallocate(B2)
-   write (out_unit, *) 'END Hagedorn projection <psi|psi>=',Norm0
+   IF (debug) write (out_unit, *) 'END Hagedorn projection <psi|psi>=',Norm0
    !write (out_unit, *) 'out',psi_dt_2%CVec
 END SUBROUTINE 
 
@@ -636,8 +670,9 @@ SUBROUTINE Calc_Norm_OF_Psi(psi, Norm)
 
    TYPE(Psi_t), INTENT(IN)          :: psi
    REAL(KIND=Rkind), INTENT(INOUT)  :: Norm
-   LOGICAL, PARAMETER                :: debug = .FALSE.  ! Set to .TRUE. to print norm
+   LOGICAL                            :: debug
 
+   debug = psi%Basis%debug .OR. Debug_Enabled()
    !------------------ Compute norm based on psi representation ----------------
    IF (psi%Grid) THEN
       CALL Calc_Norm_OF_PsiGrid(psi, Norm)
@@ -671,7 +706,7 @@ END SUBROUTINE Calc_Norm_OF_Psi
       !======================================================================
    
       USE QDUtil_m
-      LOGICAL, PARAMETER                  :: debug = .FALSE.
+      LOGICAL :: debug
       TYPE(Psi_t), INTENT(IN)             :: psi_g
       REAL(KIND=Rkind), INTENT(OUT)       :: Norm
    
@@ -694,6 +729,7 @@ END SUBROUTINE Calc_Norm_OF_Psi
       !-----------------------------------------------------------
       ! Debug output (optional)
       !-----------------------------------------------------------
+      debug = psi_g%Basis%debug .OR. Debug_Enabled()
       IF (debug) THEN
          WRITE (out_unit, *) 'Beginning NormGrid computation'
          FLUSH (out_unit)
@@ -989,7 +1025,7 @@ END SUBROUTINE Calc_Norm_OF_Psi
       COMPLEX(KIND=Rkind), POINTER         :: gb(:, :)           ! Pointer to temporary/final coefficients
       REAL(KIND=Rkind)                     :: NormB ,normG  ,Re_normB           ! Norm in final representation
       INTEGER                              :: ndim, n_surf, nq, i_surf
-      LOGICAL , PARAMETER                  :: debug = .FALSE.
+      LOGICAL                              :: debug
       CHARACTER(len=*), PARAMETER :: gwp_Filename = 'gwp.dat'
       INTEGER, PARAMETER          :: gwp_File = 51
   
@@ -998,6 +1034,7 @@ END SUBROUTINE Calc_Norm_OF_Psi
       n_surf = psi%Basis%tab_basis(ndim+1)%nb
       nq     = psi%Basis%nq
       i_surf = Tab_GWP(1)%Elecindex
+      debug = psi%Basis%debug .OR. Debug_Enabled()
       
       IF (debug) THEN
           WRITE(out_unit, *) 'Initializing GWP with the following parameters:'
@@ -1029,7 +1066,7 @@ END SUBROUTINE Calc_Norm_OF_Psi
           END IF
       END IF
       
-      OPEN(unit = gwp_File, file = gwp_Filename, status = 'replace')
+      IF (debug) OPEN(unit = gwp_File, file = gwp_Filename, status = 'replace')
       !------------------ Build Gaussian Wave Packet -----------------------------
       IF (psi%grid) THEN
           ! Case 1: Initialize directly on the grid (psi%grid is .true.)
@@ -1041,7 +1078,7 @@ END SUBROUTINE Calc_Norm_OF_Psi
           
           DO iq = 1, nq
               gb(iq, i_surf) = calc_GWP(Tab_GWP(1), Q(iq, :))
-              WRITE(gwp_File,*) Q(iq,:),  abs(gb(iq, i_surf))**2
+              IF (debug) WRITE(gwp_File,*) Q(iq,:),  abs(gb(iq, i_surf))**2
           END DO
           
           DEALLOCATE(Q)
@@ -1057,7 +1094,7 @@ END SUBROUTINE Calc_Norm_OF_Psi
           
           DO iq = 1, nq
               gb(iq, i_surf) = calc_GWP(Tab_GWP(1), Q(iq, :))
-              WRITE(gwp_File,*) Q(iq,:),  abs(gb(iq, i_surf))**2
+              IF (debug) WRITE(gwp_File,*) Q(iq,:),  abs(gb(iq, i_surf))**2
           END DO
   
           DEALLOCATE(Q)
@@ -1068,9 +1105,13 @@ END SUBROUTINE Calc_Norm_OF_Psi
           CALL dealloc_psi(psi_temp)
       END IF
   
+      IF (debug) CLOSE(gwp_File)
+
       !------------------ Norm Checking and Renormalization -------------------------
-      WRITE(out_unit, *) '------------------- Norm Checking after GWP initialization ----------------'
-      WRITE(out_unit, *)
+      IF (debug) THEN
+         WRITE(out_unit, *) '------------------- Norm Checking after GWP initialization ----------------'
+         WRITE(out_unit, *)
+      END IF
       IF (psi%grid) THEN
         CALL Calc_Norm_Of_Psi(psi, NormG)
         psi%CVec(:) = psi%CVec(:)/NormG
@@ -1085,14 +1126,18 @@ END SUBROUTINE Calc_Norm_OF_Psi
       
       ! Display final state
       IF (psi%grid) THEN
-      WRITE(out_unit, *) 'Norm of the initial GWP set on grid  normG := ', NormG  
+      IF (debug) WRITE(out_unit, *) 'Norm of the initial GWP set on grid  normG := ', NormG
       ELSE
-         WRITE(out_unit, *) 'Norm of the initial GWP set on basis  normB := ', NormB  
-         WRITE(out_unit, *) 'Norm of the  renormalized initial GWP set on basis  Re_normB := ', Re_normB  
+         IF (debug) THEN
+            WRITE(out_unit, *) 'Norm of the initial GWP set on basis  normB := ', NormB
+            WRITE(out_unit, *) 'Norm of the  renormalized initial GWP set on basis  Re_normB := ', Re_normB
+         END IF
       END IF
   
-      WRITE(out_unit, *) '------------------------------ End Norm Checking --------------------------'
-      WRITE(out_unit, *)
+      IF (debug) THEN
+         WRITE(out_unit, *) '------------------------------ End Norm Checking --------------------------'
+         WRITE(out_unit, *)
+      END IF
   
   END SUBROUTINE psi_init_GWP
   

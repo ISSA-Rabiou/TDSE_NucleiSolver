@@ -7,6 +7,8 @@ module Hagedorn_m
    USE polyortho_m
    USE sub_propa_m
    USE HagedornOverlap_m
+   USE HagedornBasis_m, ONLY: Cmat_to_QP
+   USE HagedornLinalg_m, ONLY: max_abs_c
    implicit none
    PRIVATE
      !> Public interfaces for Hagedorn basis construction and projection operations
@@ -51,6 +53,7 @@ end subroutine build_identity_matrix
 
 SUBROUTINE Construct_Hagedorn_none_Variational_Basis(Basis, Qt, SQt, At, Pt)
   USE QDUtil_m
+  USE, INTRINSIC :: IEEE_ARITHMETIC, ONLY: IEEE_IS_FINITE
   IMPLICIT NONE
 
   ! === Interface ===
@@ -65,8 +68,19 @@ SUBROUTINE Construct_Hagedorn_none_Variational_Basis(Basis, Qt, SQt, At, Pt)
   COMPLEX(kind=Rkind), ALLOCATABLE :: A0(:)
   INTEGER :: ndim, ib, nb, nq
 
-  ! === Determine dimensionality
+  ! === Determine dimensionality and validate parameters before rebuilding
+  IF (.NOT. ALLOCATED(Basis%tab_basis)) ERROR STOP 'Hagedorn basis has no primitive bases.'
   ndim = SIZE(Basis%tab_basis) - 1
+  IF (ndim < 1) ERROR STOP 'Hagedorn basis must contain at least one nuclear dimension.'
+  IF (SIZE(Qt) /= ndim .OR. SIZE(SQt) /= ndim .OR. SIZE(At) /= ndim .OR. SIZE(Pt) /= ndim) &
+     ERROR STOP 'Hagedorn basis parameter arrays do not match the basis dimension.'
+  DO ib = 1, ndim
+    IF (.NOT. IEEE_IS_FINITE(Qt(ib)) .OR. .NOT. IEEE_IS_FINITE(SQt(ib)) .OR. &
+        .NOT. IEEE_IS_FINITE(Pt(ib)) .OR. .NOT. IEEE_IS_FINITE(REAL(At(ib),KIND=Rkind)) .OR. &
+        .NOT. IEEE_IS_FINITE(AIMAG(At(ib)))) ERROR STOP 'Non-finite Hagedorn basis parameter.'
+    IF (SQt(ib) <= SQRT(TINY(ONE)) .OR. REAL(At(ib),KIND=Rkind) <= ZERO) &
+       ERROR STOP 'Hagedorn basis width must be strictly positive.'
+  END DO
 
   ! === Allocate arrays to store current basis parameters
   ALLOCATE(Q0(ndim), SQ0(ndim), P0(ndim), A0(ndim))
@@ -93,6 +107,11 @@ SUBROUTINE Construct_Hagedorn_none_Variational_Basis(Basis, Qt, SQt, At, Pt)
     IF (Basis%tab_basis(ib)%Basis_name == 'herm' .OR. &
         Basis%tab_basis(ib)%Basis_name == 'ho') THEN
       !Using algebric routine
+      IF (.NOT. ALLOCATED(Basis%tab_basis(ib)%S)) ALLOCATE(Basis%tab_basis(ib)%S(nb,nb))
+      IF (SIZE(Basis%tab_basis(ib)%S,1) /= nb .OR. SIZE(Basis%tab_basis(ib)%S,2) /= nb) THEN
+        DEALLOCATE(Basis%tab_basis(ib)%S)
+        ALLOCATE(Basis%tab_basis(ib)%S(nb,nb))
+      END IF
              call Calc_S_algebraic_genfunc(Basis%tab_basis(ib)%S, nb, Q0(ib), SQ0(ib), A0(ib), P0(ib), &
                                            Qt(ib), SQt(ib), At(ib), Pt(ib))
   
@@ -145,7 +164,7 @@ END SUBROUTINE Construct_Hagedorn_none_Variational_Basis
 !    - Uses an integration index table Tab_Iq, allocated internally.
 !    - Ensures clean memory handling (Tab_Iq is always deallocated).
 !=======================================================================
-SUBROUTINE Calc_Basis_parameters(psi, Qt, SQt, At, Pt, propa)
+SUBROUTINE Calc_Basis_parameters(psi, Qt, SQt, At, Pt, propa, need_Pt, need_At)
    USE psi_m
    IMPLICIT NONE
 
@@ -156,9 +175,11 @@ SUBROUTINE Calc_Basis_parameters(psi, Qt, SQt, At, Pt, propa)
    COMPLEX(kind=Rkind),  INTENT(INOUT)  :: At(:)      ! "A" parameter (complex width)
    REAL(kind=Rkind),     INTENT(INOUT)  :: Pt(:)      ! Momentum expectation value <P>
    TYPE(propa_t), OPTIONAL, INTENT(IN)  :: propa      ! Propagation settings (optional)
+   LOGICAL, OPTIONAL, INTENT(IN) :: need_Pt, need_At
 
    ! === Local variables ===
    INTEGER, ALLOCATABLE                :: Tab_Iq(:, :)
+   LOGICAL :: compute_Pt, compute_At
 
    ! ---------------------------------------------------------------
    ! Build integration index table (used for <ψ|Q|ψ>, <ψ|Q²|ψ>, etc.)
@@ -170,31 +191,19 @@ SUBROUTINE Calc_Basis_parameters(psi, Qt, SQt, At, Pt, propa)
    ! ---------------------------------------------------------------
    CALL Calc_AVQ_SQ_nD(psi, Qt, SQt, Tab_Iq)
 
-   ! ---------------------------------------------------------------
-   ! Case 1: If "propa" is present → selective computation
-   ! ---------------------------------------------------------------
+   compute_Pt = .TRUE.
+   compute_At = .TRUE.
    IF (PRESENT(propa)) THEN
-      ! Default initialization
-      Pt(:) = ZERO
-      At(:) = SQt(:) * SQt(:)
-
-      ! Momentum expectation value <P>
-      IF (propa%P) THEN
-         CALL Calc_Av_imp_k_nD(psi, Pt)
-      END IF
-
-      ! Complex width parameter A
-      IF (propa%Beta) THEN
-         CALL Calc_Avg_A_nD(psi, At)
-      END IF
-
-   ! ---------------------------------------------------------------
-   ! Case 2: No "propa" provided → compute everything fully
-   ! ---------------------------------------------------------------
-   ELSE
-      CALL Calc_Av_imp_k_nD(psi, Pt)
-      CALL Calc_Avg_A_nD(psi, At)
+      compute_Pt = propa%P
+      compute_At = propa%Beta
    END IF
+   IF (PRESENT(need_Pt)) compute_Pt = need_Pt
+   IF (PRESENT(need_At)) compute_At = need_At
+
+   Pt(:) = ZERO
+   At(:) = SQt(:) * SQt(:)
+   IF (compute_Pt) CALL Calc_Av_imp_k_nD(psi, Pt)
+   IF (compute_At) CALL Calc_Avg_A_nD(psi, At)
 
    ! ---------------------------------------------------------------
    ! Cleanup
@@ -216,7 +225,7 @@ SUBROUTINE Calc_S(S,nb,nq,Q0,SQ0,A0,P0,Qt,SQt,At,Pt)
   integer, intent(in)                :: nb, nq
 
   ! Local variables
-  integer :: ib, iq, jb
+  integer :: ib, iq
   real(kind=Rkind) :: SQeq, Qeq
   real(kind=Rkind), allocatable :: Q(:), W(:)
   real(kind=Rkind) :: B0, Bt
@@ -295,7 +304,7 @@ SUBROUTINE Test_Calc_S()
   USE QDUtil_m
   IMPLICIT NONE
 
-  integer, parameter :: nb = 3, nq = 25
+  integer, parameter :: nb = 3
   complex(kind=Rkind) :: S(nb, nb)
   real(kind=Rkind) :: Q0, SQ0, P0, Qt, SQt, Pt
   complex(kind=Rkind) :: A0, At
@@ -471,7 +480,7 @@ END SUBROUTINE Test_Calc_S
 
 
 
-      e_alg_bq = maxabs_mat(Salg - Sbourq)
+      e_alg_bq = max_abs_c(Salg - Sbourq)
 
       if (e_alg_bq > tol_exact) all_ok = .false.
 
@@ -499,27 +508,25 @@ END SUBROUTINE Test_Calc_S
 
                                                scenarios(i)%Qt, scenarios(i)%SQt, scenarios(i)%At, scenarios(i)%Pt)
 
-        e_num_alg = maxabs_mat(Snum - Salg)
+        e_num_alg = max_abs_c(Snum - Salg)
 
-        e_num_bq  = maxabs_mat(Snum - Sbourq)
+        e_num_bq  = max_abs_c(Snum - Sbourq)
 
         write(out_unit,'(A,I4,A,ES12.4,A,ES12.4)') '    nq =', nq_values(iq), '  |num-alg| =', e_num_alg, '  |num-bq| =', e_num_bq
 
       end do
 
+      ! Make the highest-resolution numerical comparison an assertion for
+      ! every scenario (the previous test only checked the final scenario).
+      call Calc_S_numeric_realgrid(Snum, nb, 100, scenarios(i)%Q0, scenarios(i)%SQ0, scenarios(i)%A0, scenarios(i)%P0, &
+                                   scenarios(i)%Qt, scenarios(i)%SQt, scenarios(i)%At, scenarios(i)%Pt)
+      e_num_alg = max_abs_c(Snum - Salg)
+      e_num_bq  = max_abs_c(Snum - Sbourq)
+      if (e_num_alg > tol_num .or. e_num_bq > tol_num) all_ok = .false.
+
       write(out_unit,'(A)') ''
 
     end do
-
-
-
-    call Calc_S_numeric_realgrid(Snum, nb, 100, scenarios(6)%Q0, scenarios(6)%SQ0, scenarios(6)%A0, scenarios(6)%P0, &
-
-                                           scenarios(6)%Qt, scenarios(6)%SQt, scenarios(6)%At, scenarios(6)%Pt)
-
-    e_num_alg = maxabs_mat(Snum - Salg)
-
-    if (e_num_alg > tol_num) all_ok = .false.
 
 
 
@@ -592,6 +599,7 @@ subroutine build_overlap_matrices(B1, B2)
 end subroutine build_overlap_matrices
 
 subroutine Test_projection_hagedorn(Basis,psi)
+  USE, INTRINSIC :: IEEE_ARITHMETIC, ONLY: IEEE_IS_FINITE
   implicit none
 
   TYPE(Basis_t), intent(in)                 :: Basis
@@ -605,7 +613,7 @@ subroutine Test_projection_hagedorn(Basis,psi)
   integer, allocatable                      :: Tab_iq2(:,:)
   
   real(kind=Rkind)                          :: norm1  , norm2, E1, E2
-  integer                                   :: ib, ndim, n_basis
+  integer                                   :: ib
   complex(kind=Rkind)                       :: alpha(2)
   real(kind=Rkind)                          :: q(2), p(2), sq(2)
 
@@ -690,7 +698,7 @@ subroutine Test_projection_hagedorn(Basis,psi)
 
 
   ! Project psi1 (constructed with B1) onto B2; result is stored in psi2
-  call projection1(psi2, psi1)
+  call Projection(psi2, psi1)
 
   ! Display the coefficients of psi2
   do ib = 1, size(psi2%CVec)
@@ -701,6 +709,15 @@ subroutine Test_projection_hagedorn(Basis,psi)
   call Calc_Av_E(E2, psi2, H2)
   call Calc_Norm_OF_psi(psi2, norm2)
   print *, 'Norm, E2', norm2, E2
+
+  IF (.NOT. IEEE_IS_FINITE(norm1) .OR. .NOT. IEEE_IS_FINITE(E1) .OR. &
+      .NOT. IEEE_IS_FINITE(norm2) .OR. .NOT. IEEE_IS_FINITE(E2)) &
+     ERROR STOP 'Test_projection_hagedorn: non-finite norm or energy after projection.'
+  IF (norm2 <= SQRT(TINY(ONE))) &
+     ERROR STOP 'Test_projection_hagedorn: projected state has zero/vanishing norm.'
+  IF (.NOT. ALL(IEEE_IS_FINITE(REAL(psi2%CVec,KIND=Rkind))) .OR. &
+      .NOT. ALL(IEEE_IS_FINITE(AIMAG(psi2%CVec)))) &
+     ERROR STOP 'Test_projection_hagedorn: projected coefficients contain non-finite values.'
 
   ! End of projection test
 end subroutine test_projection_hagedorn
@@ -724,6 +741,7 @@ end subroutine test_projection_hagedorn
    !   use_psi0_params   : logical, TRUE => take parameters from psi_main (inverse)
    !
    !============================================================================
+   USE, INTRINSIC :: IEEE_ARITHMETIC, ONLY: IEEE_IS_FINITE
    IMPLICIT NONE
  
    TYPE(psi_t),     INTENT(INOUT) :: psi_main
@@ -735,10 +753,22 @@ end subroutine test_projection_hagedorn
    COMPLEX(KIND=Rkind), ALLOCATABLE :: At(:)
    REAL(KIND=Rkind), ALLOCATABLE    :: Qt(:), SQt(:), Pt(:)
    REAL(KIND=Rkind)                  :: Norm0, norm
-   INTEGER                           :: ndim
+   INTEGER                           :: ndim, idim
  
    !-------------------------------- Initialization --------------------------------
+   IF (.NOT. ASSOCIATED(psi_main%Basis)) ERROR STOP 'Hagedorn: psi_main has no associated basis.'
+   IF (.NOT. ASSOCIATED(psi_temp%Basis)) ERROR STOP 'Hagedorn: psi_temp has no associated basis.'
+   IF (.NOT. ALLOCATED(psi_main%CVec) .OR. .NOT. ALLOCATED(psi_temp%CVec)) &
+      ERROR STOP 'Hagedorn: coefficient vectors must be allocated.'
+   IF (.NOT. ALLOCATED(psi_main%Basis%tab_basis) .OR. .NOT. ALLOCATED(psi_temp%Basis%tab_basis)) &
+      ERROR STOP 'Hagedorn: primitive basis metadata must be allocated.'
+   IF (SIZE(psi_main%CVec) /= SIZE(psi_temp%CVec)) &
+      ERROR STOP 'Hagedorn: source and destination coefficient dimensions differ.'
+   IF (SIZE(psi_main%Basis%tab_basis) /= SIZE(psi_temp%Basis%tab_basis)) &
+      ERROR STOP 'Hagedorn: source and destination basis dimensions differ.'
+
    ndim = SIZE(psi_main%Basis%tab_basis) - 1
+   IF (ndim < 1) ERROR STOP 'Hagedorn: at least one nuclear degree of freedom is required.'
    ALLOCATE(Qt(ndim), SQt(ndim), Pt(ndim), At(ndim))
  
    !-------------------------------- Compute Parameters --------------------------------
@@ -749,12 +779,24 @@ end subroutine test_projection_hagedorn
       ! Inverse projection: copy from psi_main
       CALL Get_Basis_Parameters(psi_main%Basis, Qt, SQt, At, Pt)
    END IF
+
+   DO idim = 1, ndim
+      IF (.NOT. IEEE_IS_FINITE(Qt(idim)) .OR. .NOT. IEEE_IS_FINITE(SQt(idim)) .OR. &
+          .NOT. IEEE_IS_FINITE(Pt(idim)) .OR. .NOT. IEEE_IS_FINITE(REAL(At(idim),KIND=Rkind)) .OR. &
+          .NOT. IEEE_IS_FINITE(AIMAG(At(idim)))) ERROR STOP 'Hagedorn: non-finite packet parameter.'
+      IF (SQt(idim) <= SQRT(TINY(ONE)) .OR. REAL(At(idim),KIND=Rkind) <= ZERO) &
+         ERROR STOP 'Hagedorn: packet width must be strictly positive.'
+   END DO
  
    !------------------------ Construct new Hagedorn basis ---------------------------
    CALL Construct_Hagedorn_none_Variational_Basis(psi_temp%Basis, Qt, SQt, At, Pt)
+
+   ! Projection coefficients are expressed in the new basis. Do not rely on
+   ! psi_main and psi_temp having happened to share a basis pointer.
+   psi_main%Basis => psi_temp%Basis
  
    !--------------------------- Save norm before projection --------------------------
-   CALL Calc_Norm_OF_psi(psi_temp, Norm0)
+   IF (propa%debug) CALL Calc_Norm_OF_psi(psi_temp, Norm0)
  
    !-------------------------- Project temporary wavefunction ------------------------
    CALL Projection(psi_main, psi_temp)
@@ -766,8 +808,10 @@ end subroutine test_projection_hagedorn
    END IF
  
    !----------------------------- Final norm check -----------------------------------
-   CALL Calc_Norm_OF_psi(psi_main, norm)
-   WRITE(out_unit,*) 'Norm diff =', ABS(Norm0 - norm), 'Norm0 =', Norm0, 'Norm =', norm
+   IF (propa%debug) THEN
+      CALL Calc_Norm_OF_psi(psi_main, norm)
+      WRITE(out_unit,*) 'Norm diff =', ABS(Norm0 - norm), 'Norm0 =', Norm0, 'Norm =', norm
+   END IF
  
    !----------------------------- Clean-up -------------------------------------------
    DEALLOCATE(Qt, SQt, At, Pt)
@@ -795,11 +839,26 @@ end subroutine test_projection_hagedorn
   REAL(kind=Rkind) :: Norm0, norm      ! Norms before and after propagation (for conservation check)
   REAL(kind=Rkind) :: E0, E            ! Energies before and after propagation
   INTEGER          :: ndim             ! Number of degrees of freedom (basis size - 1)
-  LOGICAL, PARAMETER :: debug=.FALSE.
+  LOGICAL :: debug
   CHARACTER(len=Name_len)                  :: name
 
+  ! Validate required associations before dereferencing metadata, regardless of
+  ! the debug setting. This turns invalid state into a useful diagnostic rather
+  ! than a segmentation fault in a later basis/projection routine.
+  IF (.NOT. ASSOCIATED(psi%Basis)) ERROR STOP 'march_Global: psi has no associated basis.'
+  IF (.NOT. ASSOCIATED(psi_dt%Basis)) ERROR STOP 'march_Global: psi_dt has no associated basis.'
+  IF (.NOT. ALLOCATED(psi%CVec) .OR. .NOT. ALLOCATED(psi_dt%CVec)) &
+     ERROR STOP 'march_Global: coefficient vectors must be allocated.'
+  IF (.NOT. ALLOCATED(psi%Basis%tab_basis) .OR. .NOT. ALLOCATED(psi_dt%Basis%tab_basis)) &
+     ERROR STOP 'march_Global: basis metadata must be allocated.'
+  IF (SIZE(psi%CVec) /= SIZE(psi_dt%CVec)) &
+     ERROR STOP 'march_Global: psi and psi_dt coefficient dimensions differ.'
+  IF (SIZE(psi%Basis%tab_basis) < 2 .OR. SIZE(psi_dt%Basis%tab_basis) < 2) &
+     ERROR STOP 'march_Global: basis must contain nuclear and electronic components.'
+
   ! Determine number of degrees of freedom from the basis
-  ndim = size(psi%Basis%tab_basis) - 1
+  debug = propa%debug
+  ndim = SIZE(psi%Basis%tab_basis) - 1
 
   IF (debug) THEN
      WRITE(out_unit,*) 'BEGIN march_Global'
@@ -840,29 +899,37 @@ end subroutine test_projection_hagedorn
 
   ! If the propagator is Hagedorn-based, perform full Hagedorn propagation
   IF (propa%propa_name == 'hagedorn') THEN
-     ! Step 1: Time propagation (temporary psi_dt)
+     ! Three-phase Hagedorn update:
+     ! 1) Propagate psi -> psi_dt with H and the old basis.
      CALL march(psi, psi_dt, t, propa, H)
 
-     ! Step 2: Compute initial energy and norm (after temporary propagation)
-     CALL Calc_Av_E(E0, psi_dt, H)
-     CALL Calc_Norm_OF_psi(psi_dt, Norm0)
+     ! Compute diagnostics only when their corresponding output is requested.
+     IF (propa%write_E_13) CALL Calc_Av_E(E0, psi_dt, H)
+     IF (propa%write_Norm_13) CALL Calc_Norm_OF_psi(psi_dt, Norm0)
 
-     ! Step 3: Project psi_dt into Hagedorn basis
+     ! 2) Hagedorn derives the packet parameters from psi_dt, rebuilds the
+     !    moving basis, and constructs the old-to-new overlap matrices.
+     ! 3) It projects psi_dt into that new basis; then rebuild H for the next
+     !    time step. The overlap S is <new_basis|old_basis>, applied to old
+     !    coefficient vectors from the left along every nuclear dimension.
      CALL Hagedorn(psi, psi_dt, propa,use_psi0_params=.FALSE.)
 
-     ! Step 4: Reconstruct operator H with new basis
+     ! Reconstruct the operator with the newly installed basis.
      IF (ALLOCATED(H%Scal_pot)) DEALLOCATE(H%Scal_pot)
      CALL Calc_tab_Iq(Tab_iq, psi%Basis)
      CALL Set_Op(H, psi%Basis, Tab_iq,nio=in_unit)
 
-     ! Step 5: Recalculate energy and norm for final psi
-     CALL Calc_Av_E(E, psi, H)
-     CALL Calc_Norm_OF_psi(psi, norm)
-
-     ! Step 6: Output energy and norm differences for diagnostics
-     WRITE(u_E_13,*) t, ABS(E0 - E), E0, E
-     WRITE(u_Norm_13,*) t, ABS(Norm0 - norm), Norm0, norm
-     FLUSH(out_unit)
+     ! Recalculate and write only the requested diagnostics.
+     IF (propa%write_E_13) THEN
+        CALL Calc_Av_E(E, psi, H)
+        WRITE(u_E_13,*) t, ABS(E0 - E), E0, E
+        FLUSH(u_E_13)
+     END IF
+     IF (propa%write_Norm_13) THEN
+        CALL Calc_Norm_OF_psi(psi, norm)
+        WRITE(u_Norm_13,*) t, ABS(Norm0 - norm), Norm0, norm
+        FLUSH(u_Norm_13)
+     END IF
   ELSE
      ! Default propagation: simple time step without Hagedorn basis
      CALL march(psi, psi_dt, t, propa, H)

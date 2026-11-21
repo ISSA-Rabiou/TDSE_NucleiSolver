@@ -1,0 +1,51 @@
+#!/usr/bin/env bash
+set -euo pipefail  
+
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+ROOT_DIR="$(cd -- "$SCRIPT_DIR/.." && pwd)"
+if [[ $# -ne 1 ]]; then
+  echo "Usage: $0 GWPSOURCE" >&2
+  echo "Exemple: $0 input" >&2
+  exit 2
+fi
+
+GWPSOURCE=$1
+
+RESULT_DIR="$SCRIPT_DIR/results_PSB3_STD_${GWPSOURCE}"
+mkdir -p "$RESULT_DIR"
+cd "$RESULT_DIR"
+"$ROOT_DIR/TD_SCHROD.x" > run.log 2>&1 <<EOF
+
+! PSB3 3D, calcul de référence.
+&coordQMLpot
+  coord_type='CC'
+  pot_itQtransfo=-1
+  construction_type='developed'
+  sym_type='SYM'
+  model_type='QML'
+  pot0=0.0
+/
+&potential
+  pot_name='PSB3'
+  ndim=3
+  nsurf=2
+  option=1
+  adiabatic=F
+  PubliUnit=F
+/
+&basis_nd name='dp' nb_basis=4 /
+&basis_nd name='HO' nb=20 nq=30 use_initial_gwp=T debug=F /
+&basis_nd name='HO' nb=30 nq=40 use_initial_gwp=T debug=F /
+&basis_nd name='HO' nb=24 nq=32 use_initial_gwp=T debug=F /
+&basis_nd name='el' nb=2 /
+
+&defGWP ndim=3 Elecindex=2 Coef=(1.0,0.0) source='$GWPSOURCE' /
+ &defWP0 sigma= 0.15979484771986063 Beta=0.0 Qeq= 0.17245900000000000 imp_k=0.0 gamma=0.0 /
+ &defWP0 sigma= 0.15069170601879719 Beta=0.0 Qeq=-3.1400000000000001 imp_k=0.0 gamma=0.0 /
+ &defWP0 sigma= 0.37527576145889341 Beta=0.0 Qeq= 0.0000000000000000 imp_k=0.0 gamma=0.0 /
+
+&prop t0=0.0 tf=20700 delta_t=10.0 eps=1.e-12 max_iter=500
+  propa_name='standard_taylor'  Beta=F P=F renorm=F
+write_E=T write_Norm=T write_auto_cor=T write_pop=T write_Qt=T write_Pt=T debug=F /
+
+EOF

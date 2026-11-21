@@ -3,10 +3,14 @@ MODULE Basis_m
    USE NDindex_m
    USE polyortho_m
    USE SmolyakSparseGridMetadata_m
+   USE NUFFT_m, ONLY: NUFFT, INV_NUFFT
 
    IMPLICIT NONE
 
    PRIVATE
+   LOGICAL, SAVE :: Basis_Debug_Enabled = .FALSE.
+   LOGICAL, SAVE :: Propa_Debug_Enabled = .FALSE.
+   PUBLIC :: Debug_Enabled, Basis_Debug_Active, Set_Propa_Debug, Reset_Debug_Controls
    PUBLIC :: Basis_t
    PUBLIC :: Read_Basis, Write_Basis
    PUBLIC :: Basis_IS_allocated, Basis_IS_allocatedtot
@@ -19,7 +23,7 @@ MODULE Basis_m
    PUBLIC :: GridTOBasis_nD_cplx, BasisTOGrid_nD_cplx
    
    PUBLIC :: Calc_Q_grid, Calc_index
-   PUBLIC :: Rdensity_alloc, Rdensity_Writing
+   PUBLIC :: Rdensity_alloc, Rdensity_Writing, Rdensity_Dealloc
    
    PUBLIC :: Scale_Basis, init_Basis1_TO_Basis2
    PUBLIC :: construct_primitive_basis, construct_primitive_basis_temp
@@ -27,17 +31,14 @@ MODULE Basis_m
    PUBLIC :: Construct_Basis_Ho,Construct_Basis_Hag
    PUBLIC :: CheckOrtho_Basis
    
-   PUBLIC :: pdv2psi_nD
    
    PUBLIC :: Get_Basis_Parameters, Change_Basis_Parameters
    PUBLIC :: Basis_UsesSmolyakSparseGrid, Get_TotalBasisCoefficientCount
    
-   PUBLIC :: Calc_reduced_Density_surf, Calc_reduced_density
    PUBLIC :: FinalizeSparseGridRepresentation
    PUBLIC :: REDUCED_DENSIRY_t
    PUBLIC :: calc_tab_Iq0 ,Complete_construct_Basis
    PUBLIC :: Print_Grids, Build_NUFT_Grids, Test_NUFFT_Cycle
-   PUBLIC :: ApplyExpVdtAndTransformToMomentum,ApplyExpTdtAndTransformToPosition
    
 
 !----------------------------------------------------------------------
@@ -70,6 +71,8 @@ MODULE Basis_m
 
    TYPE :: Basis_t
    INTEGER                             :: nb_basis = ZERO
+   LOGICAL                             :: debug = .FALSE.
+   LOGICAL                             :: use_initial_gwp = .FALSE.
    INTEGER                             :: nb, nq
    REAL(KIND=Rkind)                    :: A, B
    REAL(KIND=Rkind)                    :: imp_k    ! Momentum parameter
@@ -112,6 +115,24 @@ END TYPE Basis_t
    END TYPE REDUCED_DENSIRY_t
 
 CONTAINS
+
+   LOGICAL FUNCTION Debug_Enabled()
+      Debug_Enabled = Propa_Debug_Enabled
+   END FUNCTION Debug_Enabled
+
+   LOGICAL FUNCTION Basis_Debug_Active()
+      Basis_Debug_Active = Basis_Debug_Enabled
+   END FUNCTION Basis_Debug_Active
+
+   SUBROUTINE Set_Propa_Debug(enabled)
+      LOGICAL, INTENT(IN) :: enabled
+      Propa_Debug_Enabled = enabled
+   END SUBROUTINE Set_Propa_Debug
+
+   SUBROUTINE Reset_Debug_Controls()
+      Basis_Debug_Enabled = .FALSE.
+      Propa_Debug_Enabled = .FALSE.
+   END SUBROUTINE Reset_Debug_Controls
 
    RECURSIVE FUNCTION Basis_IS_allocated(Basis) RESULT(alloc)
 
@@ -170,7 +191,7 @@ CONTAINS
 
       !<--- Local variables
       INTEGER                         :: i
-      LOGICAL ,PARAMETER              :: debug = .FALSE.
+      LOGICAL :: debug
 
       IF(Basis%Basis_name == 'el')THEN
          WRITE(out_unit,*) 'Write_Basis: Basis_name=el'
@@ -178,6 +199,8 @@ CONTAINS
        RETURN
        FLUSH(out_unit)
       END IF
+
+      debug = Basis%debug .OR. Propa_Debug_Enabled
 
       IF (debug) THEN
          WRITE(out_unit,*) '---------------------------------------------------------------------'
@@ -282,6 +305,8 @@ CONTAINS
         call Deallocate_Basis(Basis2)
         Basis2%Basis_name  = Basis1%Basis_name
         Basis2%nb_basis    = Basis1%nb_basis
+        Basis2%debug       = Basis1%debug
+        Basis2%use_initial_gwp = Basis1%use_initial_gwp
         Basis2%representation_layout = Basis1%representation_layout
         Basis2%LB = Basis1%LB
         Basis2%LG = Basis1%LG
@@ -308,6 +333,8 @@ CONTAINS
         ! Elementary basis: directly copy parameters
         Basis2%Basis_name  = Basis1%Basis_name
         Basis2%nb_basis    = Basis1%nb_basis
+        Basis2%debug       = Basis1%debug
+        Basis2%use_initial_gwp = Basis1%use_initial_gwp
         Basis2%nb          = Basis1%nb
         Basis2%nq          = Basis1%nq
         Basis2%Q0          = Basis1%Q0
@@ -337,8 +364,10 @@ CONTAINS
    TYPE(Basis_t), intent(inout) :: Basis
 
    !<--- Local variables
-   LOGICAL, PARAMETER :: debug = .FALSE.
+   LOGICAL :: debug
    INTEGER                      :: i
+
+   debug = Basis%debug .OR. Propa_Debug_Enabled
 
    IF(debug) THEN
       WRITE(out_unit,*) 'BEGINNING Deallocate_Basis'
@@ -449,7 +478,7 @@ CONTAINS
 !=======================================================================
    RECURSIVE SUBROUTINE Read_Basis(Basis, nio)
    USE QDUtil_m
-   LOGICAL, PARAMETER                  :: debug = .FALSE.
+   LOGICAL                              :: debug
    TYPE(Basis_t), INTENT(INOUT)        :: Basis
    INTEGER, INTENT(IN)                 :: nio
 
@@ -457,12 +486,14 @@ CONTAINS
    INTEGER                              :: err_io, nb, nq, i, nb_basis, ib
    CHARACTER(LEN=Name_len)              :: name
    INTEGER                              :: LB, LG, A_b_smol, B_b_smol, A_g_smol, B_g_smol
+   LOGICAL                              :: use_initial_gwp
+   LOGICAL                              :: q0_is_set, impk_is_set, alpha_is_set
    CHARACTER(LEN=Name_len)              :: normalized_name
    REAL(KIND=Rkind)                     :: A, B, scaleQ, Q0, Imp_k
    COMPLEX(KIND=Rkind)                  :: Alpha
 
    ! Namelist declaration
-   NAMELIST /basis_nD/ name, nb_basis, nb, nq, A, B, scaleQ, Q0, Imp_k, Alpha, LB, LG, A_b_smol, B_b_smol, A_g_smol, B_g_smol
+   NAMELIST /basis_nD/ name, nb_basis, nb, nq, A, B, scaleQ, Q0, Imp_k, Alpha, LB, LG, A_b_smol, B_b_smol, A_g_smol, B_g_smol, debug, use_initial_gwp
 
    ! ===== Default values =====
    nb_basis = 0
@@ -470,20 +501,36 @@ CONTAINS
    nq       = 0
    A        = ZERO
    B        = ZERO
-   Q0       = ZERO
+   Q0       = HUGE(ONE)
    scaleQ   = ONE
    name     = '0'
-   Imp_k    = ZERO
-   Alpha    = CONE
+   Imp_k    = HUGE(ONE)
+   Alpha    = CMPLX(-HUGE(ONE), -HUGE(ONE), KIND=Rkind)
    LB       = 0
    LG       = 0
    A_b_smol = 0
    B_b_smol = 0
    A_g_smol = 0
    B_g_smol = 0
+   debug = .FALSE.
+   use_initial_gwp = .FALSE.
 
    ! ===== Read namelist =====
    READ (nio, NML=basis_nD, IOSTAT=err_io)
+   Basis_Debug_Enabled = Basis_Debug_Enabled .OR. debug
+   q0_is_set = Q0 /= HUGE(ONE)
+   impk_is_set = Imp_k /= HUGE(ONE)
+   alpha_is_set = REAL(Alpha, KIND=Rkind) /= -HUGE(ONE)
+   IF (.NOT. q0_is_set) Q0 = ZERO
+   IF (.NOT. impk_is_set) Imp_k = ZERO
+   IF (.NOT. alpha_is_set) Alpha = CONE
+   normalized_name = TRIM(ADJUSTL(name))
+   CALL string_uppercase_TO_lowercase(normalized_name)
+   IF (TRIM(normalized_name) == 'ho' .OR. TRIM(normalized_name) == 'hag') THEN
+      ! When any essential Gaussian geometry field is omitted, use the unique
+      ! initial-GWP definition instead of silently constructing a mismatched basis.
+      use_initial_gwp = use_initial_gwp .OR. (.NOT. q0_is_set .OR. .NOT. impk_is_set .OR. .NOT. alpha_is_set)
+   END IF
 
    ! ===== Debug / formatted output =====
    IF (debug) THEN
@@ -525,6 +572,8 @@ CONTAINS
       Basis%nb_basis   = nb_basis
       Basis%LB = LB
       Basis%LG = LG
+      Basis%debug = debug
+      Basis%use_initial_gwp = use_initial_gwp
       Basis%A = A
       Basis%B = B
       ! Backward-compatible input: when LG is omitted, use LB for the grid.
@@ -540,6 +589,7 @@ CONTAINS
       ALLOCATE (Basis%tab_basis(nb_basis))
       DO i = 1, nb_basis
          CALL Read_Basis(Basis%tab_basis(i), nio)
+         IF (debug) CALL Set_Basis_Debug(Basis%tab_basis(i), .TRUE.)
 
          ! The Smolyak controls belong to the composite definition, but the
          ! cap rule is evaluated independently in every nuclear dimension.
@@ -556,6 +606,9 @@ CONTAINS
             IF (Basis%tab_basis(i)%smolyak_rule_slope_G <= 0) &
                  Basis%tab_basis(i)%smolyak_rule_slope_G = B_g_smol
          END IF
+      END DO
+      DO i = 1, nb_basis
+         IF (Basis%tab_basis(i)%debug) Basis%debug = .TRUE.
       END DO
 
       ! Keep the composite values available as well, notably for copies of
@@ -577,6 +630,8 @@ CONTAINS
    ! ===== Single basis case =====
    ELSE
       Basis%nb_basis   = nb_basis
+      Basis%debug      = debug
+      Basis%use_initial_gwp = use_initial_gwp
       Basis%nb         = nb
       Basis%nq         = nq
       Basis%Q0         = Q0
@@ -603,6 +658,18 @@ CONTAINS
    END IF
 
 END SUBROUTINE Read_Basis
+
+RECURSIVE SUBROUTINE Set_Basis_Debug(Basis, enabled)
+   TYPE(Basis_t), INTENT(INOUT) :: Basis
+   LOGICAL, INTENT(IN) :: enabled
+   INTEGER :: ib
+   Basis%debug = enabled
+   IF (ALLOCATED(Basis%tab_basis)) THEN
+      DO ib = 1, SIZE(Basis%tab_basis)
+         CALL Set_Basis_Debug(Basis%tab_basis(ib), enabled)
+      END DO
+   END IF
+END SUBROUTINE Set_Basis_Debug
 
    
    !> Calculates the index table Tab_iq for multi-dimensional quadrature indexing
@@ -656,8 +723,7 @@ END SUBROUTINE Read_Basis
    IMPLICIT NONE
 
    !==================== Parameters =====================
-   !LOGICAL, PARAMETER :: debug = .true.
-   LOGICAL, PARAMETER :: debug = .false.  ! Uncomment to disable debug mode
+   LOGICAL :: debug
 
    !==================== Interface ======================
    TYPE(Basis_t), INTENT(INOUT) :: Basis   ! Basis structure to construct
@@ -667,6 +733,7 @@ END SUBROUTINE Read_Basis
    INTEGER :: ib       ! Index for loop over sub-bases
 
    !==================== Logic ==========================
+   debug = Basis%debug .OR. Propa_Debug_Enabled
    ndim = Basis%nb_basis
 
    ! If the basis is composite (i.e., tab_basis is allocated),
@@ -722,11 +789,12 @@ END SUBROUTINE construct_primitive_basis_temp
       TYPE(Basis_t), INTENT(INOUT)           :: Basis
 
       !<==================== Local variables ====================>
-      LOGICAL, PARAMETER                     :: debug = .FALSE.
+      LOGICAL                                :: debug
       INTEGER, ALLOCATABLE                   :: NDend_q(:)
       INTEGER, ALLOCATABLE                   :: NDend_b(:)
       INTEGER                                :: ndim, ib
 
+       debug = Basis%debug .OR. Propa_Debug_Enabled
        ndim = Basis%nb_basis - 1
        ALLOCATE (NDend_q(ndim))
        ALLOCATE (NDend_b(ndim)) 
@@ -883,9 +951,12 @@ END SUBROUTINE construct_primitive_basis_temp
       TYPE(Basis_t), INTENT(INOUT)        :: Basis
 
       !<==================== Local variables ====================>
-      LOGICAL, PARAMETER                  :: debug = .FALSE.
+      LOGICAL :: debug
       REAL(KIND=Rkind)                    :: dx
       INTEGER                             :: ib, iq, nb, nq
+
+
+      debug = Basis%debug .OR. Propa_Debug_Enabled
 
 
       IF (debug) THEN
@@ -947,7 +1018,10 @@ END SUBROUTINE construct_primitive_basis_temp
       !Local variables
       REAL(KIND=Rkind)             :: dx
       INTEGER                      :: ib, iq, nb, nq
-      LOGICAL, PARAMETER           :: debug = .FALSE.
+      LOGICAL :: debug
+
+
+      debug = Basis%debug .OR. Propa_Debug_Enabled
 
 
       IF (debug) THEN
@@ -1021,7 +1095,9 @@ END SUBROUTINE construct_primitive_basis_temp
     !Input
       TYPE(Basis_t), INTENT(inout) :: Basis
     !Local variables
-      LOGICAL, PARAMETER           :: debug = .FALSE.
+      LOGICAL :: debug
+
+      debug = Basis%debug .OR. Propa_Debug_Enabled
     
       IF (debug) THEN
          WRITE (out_unit, *) 'Construct_Basis_el:-------------------------------------------------'
@@ -1051,10 +1127,11 @@ END SUBROUTINE construct_primitive_basis_temp
     !Input
       TYPE(Basis_t), INTENT(inout) :: Basis
     !Local variables
-      LOGICAL, PARAMETER           :: debug = .FALSE.
+      LOGICAL                      :: debug
       INTEGER                      :: iq, ib
       INTEGER                      :: nb, nq
     
+      debug = Basis%debug .OR. Propa_Debug_Enabled
       IF (debug) THEN
          WRITE (out_unit, *) 'Construct_Basis_Ho:-------------------------------------------------'
          WRITE (out_unit, *) 'Basis%nb= ', Basis%nb
@@ -1102,7 +1179,7 @@ END SUBROUTINE construct_primitive_basis_temp
       IMPLICIT NONE
       TYPE(Basis_t), INTENT(INOUT) :: Basis
    
-      LOGICAL, PARAMETER           :: debug = .FALSE.
+      LOGICAL                      :: debug
       INTEGER                      :: iq, ib
       INTEGER                      :: nb, nq
       REAL(KIND=Rkind)             :: q0, sq, p0, a
@@ -1111,6 +1188,7 @@ END SUBROUTINE construct_primitive_basis_temp
    
       q0    = Basis%Q0
       sq    = Basis%scaleQ
+      debug = Basis%debug .OR. Propa_Debug_Enabled
       alpha = Basis%alpha
       p0    = Basis%imp_k
       nb    = Basis%nb
@@ -1201,10 +1279,11 @@ END SUBROUTINE construct_primitive_basis_temp
    INTEGER                            :: ib, jb
    COMPLEX(KIND=Rkind), ALLOCATABLE      :: S(:,:)
    REAL(KIND=Rkind)                   :: Sii, Sij
-   LOGICAL, PARAMETER                 :: debug = .FALSE.
+   LOGICAL :: debug
 
    !-------------------------------------------------------------------------
    ! Check for incompatible basis type
+   debug = Basis%debug .OR. Propa_Debug_Enabled
    IF (debug) THEN
       WRITE(out_unit, *) 'CheckOrtho_Basis:-------------------------------------------------'
    END IF
@@ -1300,13 +1379,14 @@ END SUBROUTINE CheckOrtho_Basis
       REAL(KIND=Rkind), INTENT(IN)  :: q0, sq
    
       !<--- Local variables
-      LOGICAL, PARAMETER           :: debug = .FALSE.
+      LOGICAL                      :: debug
       INTEGER                      :: iq, ib
       INTEGER                      :: nb, nq
       REAL(KIND=Rkind)             :: a   
       COMPLEX(KIND=Rkind)          :: alpha
       REAL(KIND=Rkind) :: sq_half, sq_3half, sq_5half
 
+      debug = Basis%debug .OR. Propa_Debug_Enabled
       IF (debug) THEN
          WRITE(out_unit,*) 
          WRITE(out_unit,*) 'Begin Scale_Basis:-------------------------------------------------'
@@ -1360,11 +1440,12 @@ END SUBROUTINE CheckOrtho_Basis
       !<--- Local variables
       REAL(KIND=Rkind) :: Q0, SQ0, a
       COMPLEX(KIND=Rkind) :: alpha
-      LOGICAL, PARAMETER :: debug = .FALSE.
+      LOGICAL :: debug
   
       !--------------------------------------------------------------
       ! Retrieve alpha and compute scaling factor SQ0 = sqrt(Re(alpha))
       !--------------------------------------------------------------
+      debug = Basis%debug .OR. Propa_Debug_Enabled
       alpha = Basis%alpha
       a     = REAL(alpha, KIND=Rkind)
       SQ0   = SQRT(a)
@@ -1408,7 +1489,10 @@ END SUBROUTINE CheckOrtho_Basis
        TYPE(Basis_t), INTENT(INOUT)      :: Basis
        !<--- Local variables
        INTEGER                           :: ib, nb
-       LOGICAL, PARAMETER                :: debug = .FALSE.
+       LOGICAL :: debug
+
+
+       debug = Basis%debug .OR. Propa_Debug_Enabled
 
 
        IF (debug) THEN
@@ -1454,10 +1538,12 @@ END SUBROUTINE CheckOrtho_Basis
       LOGICAL, OPTIONAL, INTENT(IN) :: analytic_d1bb
       INTEGER :: nb, nq, ib, m, n
       LOGICAL :: use_analytic
-      LOGICAL, PARAMETER :: debug = .FALSE.
+      LOGICAL :: debug
       REAL(kind=Rkind) :: a, b, p, q0
       CHARACTER(len=Name_len) :: name
     
+      debug = Basis%debug .OR. Propa_Debug_Enabled
+
       IF (debug) THEN
          WRITE(out_unit,*) 'BEGINNING Calc_dngg_grid'
          WRITE(out_unit,*) 'Basis name: ', TRIM(Basis%Basis_name)
@@ -1598,13 +1684,15 @@ END SUBROUTINE CheckOrtho_Basis
       !<--- Input
       TYPE(Basis_t), intent(in)       :: Basis
       !<--- Local variables
-      LOGICAL, PARAMETER                :: debug = .TRUE.
+      LOGICAL :: debug
       COMPLEX(KIND=Rkind), ALLOCATABLE   :: G1(:), B1(:)
       COMPLEX(KIND=Rkind), ALLOCATABLE   :: G2(:), B2(:)
       COMPLEX(KIND=Rkind), ALLOCATABLE   :: B(:)
       REAL(KIND=Rkind), ALLOCATABLE       :: diff_g(:), diff_b(:)
       INTEGER                             :: iq, ndim
       ndim = size(Basis%tab_basis)
+
+      debug = Basis%debug .OR. Propa_Debug_Enabled
 
       IF (debug) THEN
          WRITE(out_unit, *) 'BEGINNING test_basitogridgridtobasis'
@@ -1668,11 +1756,12 @@ END SUBROUTINE CheckOrtho_Basis
       COMPLEX(kind=Rkind), intent(inout)       :: BB(:, :, :)  ! Output: Basis representation
       COMPLEX(kind=Rkind), intent(in)          :: GG(:, :, :)  ! Input: Grid representation
       ! Optional debug output
-      LOGICAL, PARAMETER                       :: debug = .FALSE.
+      LOGICAL :: debug
       INTEGER                                  :: i1, i3
    
       !-------------------------------------------------------------------------
       ! Optional debug flushing
+      debug = Basis%debug .OR. Propa_Debug_Enabled
       IF (debug) THEN
          WRITE(out_unit, *) 'BEGINNING GridTOBasis_1D_cplx'
          WRITE(out_unit, *) 'Size of GG(:, :, :) :: ', SIZE(GG, dim=1), SIZE(GG, dim=2), SIZE(GG, dim=3)
@@ -1713,11 +1802,12 @@ END SUBROUTINE CheckOrtho_Basis
       COMPLEX(kind=Rkind), intent(inout)        :: GB(:, :, :)  ! Output: Grid representation
       COMPLEX(kind=Rkind), intent(in)           :: BB(:, :, :)  ! Input: Basis representation
       ! Optional debug output
-      LOGICAL, PARAMETER                        :: debug = .FALSE.
+      LOGICAL :: debug
       INTEGER                                   :: i1, i3
    
       !-------------------------------------------------------------------------
       ! Optional debug flushing before processing
+      debug = Basis%debug .OR. Propa_Debug_Enabled
       IF (debug) THEN
          WRITE(out_unit, *) 'BEGINNING BasisTOGrid_1D_cplx'
          WRITE(out_unit, *) 'Size of GB(:, :, :) :: ', SIZE(GB, dim=1), SIZE(GB, dim=2), SIZE(GB, dim=3)
@@ -1763,7 +1853,10 @@ END SUBROUTINE CheckOrtho_Basis
       INTEGER, INTENT(INOUT), ALLOCATABLE, OPTIONAL  :: Ib1(:), Ib2(:), Ib3(:)
       INTEGER                                        :: Ndim      ! Number of spatial dimensions
       INTEGER                                        :: inb       ! Loop index
-      LOGICAL, PARAMETER                             :: debug = .FALSE.
+      LOGICAL :: debug
+
+
+      debug = Basis%debug .OR. Propa_Debug_Enabled
 
 
       IF(debug) THEN
@@ -1831,7 +1924,7 @@ SUBROUTINE BasisTOGrid_nD_cplx_dense(G, B, Basis)
    COMPLEX(KIND=Rkind), INTENT(INOUT), TARGET :: G(:)           ! Output in Grid representation
 
    ! Optional debug output
-   LOGICAL, PARAMETER :: debug = .FALSE.
+   LOGICAL :: debug
    ! Pointers for reshaped views of arrays
    COMPLEX(KIND=Rkind), POINTER :: BBG(:, :, :), BBB(:, :, :), GGB(:, :, :)
    COMPLEX(KIND=Rkind), POINTER :: GBB(:, :, :)
@@ -1843,6 +1936,9 @@ SUBROUTINE BasisTOGrid_nD_cplx_dense(G, B, Basis)
    INTEGER :: inb, ndim
 
  
+    debug = Basis%debug .OR. Propa_Debug_Enabled
+
+
     IF(debug) THEN
        WRITE(out_unit, *) 'BEGINNING BasisTOGrid_nD_cplx'
        WRITE(out_unit, *) 'intent(in) :: B(:)', SIZE(B)
@@ -1970,9 +2066,10 @@ SUBROUTINE GridTOBasis_nD_cplx_dense(B, G, Basis)
    COMPLEX(KIND=Rkind), POINTER                     :: GGG(:,:,:) 
    INTEGER                                          :: inb, Ndim
    INTEGER                                          :: Ib1, Ib2, Iq3, Iq1, Iq2, Ib3
-   LOGICAL, PARAMETER :: debug = .FALSE.
+   LOGICAL :: debug
 
    ! Optional debug output
+   debug = Basis%debug .OR. Propa_Debug_Enabled
    IF (debug) THEN
       write (out_unit, *) 'BEGINNING GridTOBasis_nD_cplx'
       WRITE(out_unit, *) 'intent(in) :: B(:)', SIZE(B)
@@ -2460,121 +2557,12 @@ END SUBROUTINE Calc_Q_grid
 !> @details Computes the Fourier transform from a non-uniform position grid Q
 !>          to a uniform momentum grid P, using multidimensional dot product for phase.
 !---------------------------------------------------------------------
-SUBROUTINE NUFFT(Q, WQ, P, psi_x, psi_p)
-   IMPLICIT NONE 
-   !< Input parameters >
-   
-   REAL(KIND=Rkind), INTENT(IN)          :: Q(:,:)      ! Non-uniform position grid (nq_tot x ndim)
-   REAL(KIND=Rkind), INTENT(IN)          :: WQ(:)       ! Position weights
-   REAL(KIND=Rkind), INTENT(IN)          :: P(:,:)      ! Uniform momentum grid (nq_tot x ndim)
-   COMPLEX(KIND=Rkind), INTENT(IN)       :: psi_x(:)    ! Wavefunction in position space
-
-   !< Output >
-   COMPLEX(KIND=Rkind), INTENT(INOUT)    :: psi_p(:)    ! Wavefunction in momentum space
-
-   !< Local variables >
-   INTEGER                                :: nq_tot, ndim
-   INTEGER                                :: iq, j
-   REAL(KIND=Rkind)                       :: phase
-   COMPLEX(KIND=Rkind)                    :: sum
-   REAL(KIND=Rkind), ALLOCATABLE          :: p_vector(:), q_vector(:)
-   REAL(KIND=Rkind)                       :: normalization_factor
-
-   ! Get sizes from Q
-   nq_tot = SIZE(Q,1)
-   ndim   = SIZE(Q,2)
-   ALLOCATE(p_vector(ndim))
-   ALLOCATE(q_vector(ndim))
-   p_vector = ZERO
-   q_vector = ZERO
-
-   normalization_factor = ONE / SQRT((TWO * PI) ** ndim)
-
-   ! Loop over all points in momentum space
-   DO iq = 1, nq_tot
-       sum = CZERO
-       p_vector = P(iq, :)
-
-       ! Loop over all points in position space
-       DO j = 1, nq_tot
-           q_vector = Q(j, :)
-
-           ! Compute multidimensional phase: dot product of momentum and position vectors
-           phase = -DOT_PRODUCT(p_vector, q_vector)
-
-           ! Accumulate contribution with position weight and complex exponential
-           sum = sum + psi_x(j) * WQ(j) * CMPLX(COS(phase), SIN(phase), KIND=Rkind)
-       END DO
-
-       ! Normalization factor 1/(2*pi)^(ndim)
-       ! This factor might need adjustment based on the quadrature scheme and convention.
-       
-       psi_p(iq) = sum*normalization_factor
-   END DO
-  
-   !clean up
-   DEALLOCATE(p_vector)
-   DEALLOCATE(q_vector)
-
-END SUBROUTINE NUFFT
 
 !>---------------------------------------------------------------------
 !> @brief INV_NUFFT: Inverse Non-uniform Fast Fourier Transform
 !> @details Transforms a wavefunction from uniform momentum grid P to non-uniform
 !>          position grid Q. Uses multidimensional dot product.
 !---------------------------------------------------------------------
-SUBROUTINE INV_NUFFT(Q, WQ, P, WP, psi_p, psi_x)
-   IMPLICIT NONE
-
-   !< Input parameters >
-   REAL(KIND=Rkind), INTENT(IN)       :: Q(:,:)       ! Non-uniform position grid (nq_tot x ndim)
-   REAL(KIND=Rkind), INTENT(IN)       :: WQ(:)        ! Position weights
-   REAL(KIND=Rkind), INTENT(IN)       :: P(:,:)       ! Uniform momentum grid (nq_tot x ndim)
-   REAL(KIND=Rkind), INTENT(IN)       :: WP(:)        ! Momentum weights
-   COMPLEX(KIND=Rkind), INTENT(IN)    :: psi_p(:)     ! Wavefunction in momentum space
-   
-   !< Output >
-   COMPLEX(KIND=Rkind), INTENT(OUT)   :: psi_x(:)     ! Wavefunction in position space
-
-   !< Local variables >
-   INTEGER                            :: nq_tot, ndim
-   INTEGER                            :: iq, j
-   REAL(KIND=Rkind)                   :: phase
-   COMPLEX(KIND=Rkind)                :: sum
-   REAL(KIND=Rkind), ALLOCATABLE      :: p_vector(:), q_vector(:)
-   REAL(KIND=Rkind)                   :: normalization_factor
-
-   ! Get sizes from Q
-   nq_tot = SIZE(Q,1)
-   ndim   = SIZE(Q,2)
-   ALLOCATE(p_vector(ndim))
-   ALLOCATE(q_vector(ndim))
-   p_vector = ZERO
-   q_vector = ZERO
-   normalization_factor = ONE / SQRT((TWO * PI) ** ndim)
-
-   ! Loop over all points in position space
-   DO iq = 1, nq_tot
-       sum = CZERO
-       q_vector = Q(iq, :)
-
-       ! Loop over all points in momentum space
-       DO j = 1, nq_tot
-           p_vector = P(j, :)
-
-           phase = DOT_PRODUCT(p_vector, q_vector)
-
-           sum = sum + psi_p(j) * WP(j) * CMPLX(COS(phase), SIN(phase), KIND=Rkind)
-       END DO
-
-       ! Normalization factor 1/(2*pi)^(ndim)
-       psi_x(iq) = sum * normalization_factor
-   END DO
-
-   !clean up
-   DEALLOCATE(p_vector)
-   DEALLOCATE(q_vector)
-END SUBROUTINE INV_NUFFT
 
 
 
@@ -2674,181 +2662,6 @@ END SUBROUTINE Test_NUFFT_Cycle
 
 
 
-SUBROUTINE ApplyExpVdtAndTransformToMomentum(psi_x, psi_p, V, dt, Q, WQ, P, WP,transform)
-   ! ------------------------------------------------------------
-   ! Apply exp(-i V(q) dt/2) on psi_x, then Fourier transform
-   ! each surface to momentum space (psi_p).
-   !
-   ! Input:
-   !   Q(nq,ndim) : position quadrature
-   !   WQ(nq)     : quadrature weights in position
-   !   P(np,ndim) : momentum quadrature
-   !   WP(np)     : quadrature weights in momentum
-   !   V(nq,nsurf,nsurf) : potential (diagonal in surface index)
-   !   dt         : time step
-   !
-   ! Input/Output:
-   !   psi_x(:)   : wavefunction in position space (vectorized: nq*nsurf)
-   !   psi_p(:)   : wavefunction in momentum space (vectorized: np*nsurf)
-   ! ------------------------------------------------------------
- 
-   IMPLICIT NONE
-   REAL(KIND=Rkind), INTENT(IN) :: Q(:,:), P(:,:), WQ(:), WP(:)
-   REAL(KIND=Rkind), INTENT(IN) :: V(:,:,:)
-   REAL(KIND=Rkind), INTENT(IN) :: dt
-   COMPLEX(KIND=Rkind), INTENT(IN), TARGET :: psi_x(:)
-   COMPLEX(KIND=Rkind), INTENT(INOUT),   TARGET :: psi_p(:)
-   LOGICAL, INTENT(IN),OPTIONAL :: transform
- 
-   ! Work arrays and pointers
-   COMPLEX(KIND=Rkind), ALLOCATABLE, TARGET :: tmp(:)
-   COMPLEX(KIND=Rkind), POINTER :: Psi_gb(:, :), Psi_pb(:, :), Psi_gbtemp(:, :)
- 
-   INTEGER :: nq, nsurf, np,ndim
-   INTEGER :: iq, isurf,jsurf
-   COMPLEX(KIND=Rkind) :: phase
- 
-   nq    = SIZE(Q,1)
-   np    = SIZE(P,1)
-   nsurf = SIZE(V,2)
-   ndim = SIZE(Q,2)
- 
-   ! --- Map input vectors to 2D views ---
-   Psi_gb(1:nq,1:nsurf) => psi_x
-   Psi_pb(1:np,1:nsurf) => psi_p
-
-   ! --- Temporary buffer for modified wavefunction ---
-   ALLOCATE(tmp(nq*nsurf))
-   tmp = CZERO
-   Psi_gbtemp(1:nq,1:nsurf) => tmp
-
- 
-   ! --- Apply exp(-i V dt/2) (diagonal only) ---
-   DO iq = 1, nq
-      DO isurf = 1, nsurf
-         phase = CZERO
-         DO jsurf = 1, nsurf
-           phase =  phase  -EYE*HALF * dt * V(iq,isurf,jsurf)
-           Psi_gbtemp(iq,isurf) = Psi_gb(iq,isurf) *EXP(phase)
-         END DO
-      END DO
-   END DO
- 
-   ! --- Transform each surface separately to momentum space ---
-   IF(PRESENT(transform)) THEN
-      IF(transform) THEN
-         DO isurf = 1, nsurf
-            CALL NUFFT(Q, WQ, P, Psi_gbtemp(:,isurf), Psi_pb(:,isurf))
-         END DO
-
-      ELSE 
-         WRITE(out_unit,*) 'ApplyExpVdtAndTransformToMomentum: transform = .FALSE.'
-         psi_p(:) = tmp(:)
-      END IF
-   ELSE
-      ! Default to transform
-      DO isurf = 1, nsurf
-         CALL NUFFT(Q, WQ, P, Psi_gbtemp(:,isurf), Psi_pb(:,isurf))
-      END DO
-   END IF
- 
-   ! --- Cleanup ---
-   DEALLOCATE(tmp)
-   NULLIFY(Psi_gb, Psi_pb, Psi_gbtemp)
- 
- END SUBROUTINE ApplyExpVdtAndTransformToMomentum
-
- SUBROUTINE ApplyExpTdtAndTransformToPosition(psi_p, psi_x, Q, WQ, P, WP, dt)
-   ! ------------------------------------------------------------
-   ! Applies exp(-i T dt) in momentum space
-   ! then transforms the wavefunction back to position space
-   ! using an inverse NUFFT.
-   !
-   ! Steps:
-   !   1. Applies the kinetic energy propagator: psi_p = exp(-i*T*dt) * psi_p
-   !   2. Performs an inverse NUFFT: psi_x = F^{-1}(psi_p)
-   !
-   ! Inputs:
-   !   P   (np, ndim) : Momentum grid points
-   !   WP  (np)       : Quadrature weights for momentum space
-   !   Q   (nq, ndim) : Position grid points
-   !   WQ  (nq)       : Quadrature weights for position space
-   !   dt             : Time step
-   !
-   ! Input/Output:
-   !   psi_p(np*nsurf) : Wavefunction in momentum space (vector input). Overwritten with intermediate result.
-   !   psi_x(nq*nsurf) : Wavefunction in position space (output).
-   ! ------------------------------------------------------------
-   IMPLICIT NONE
- 
-   ! Arguments
-   REAL(KIND=Rkind),    INTENT(IN)    :: P(:,:), WP(:), Q(:,:), WQ(:), dt
-   COMPLEX(KIND=Rkind), INTENT(INOUT),TARGET :: psi_p(:) 
-   COMPLEX(KIND=Rkind), INTENT(OUT)  ,TARGET :: psi_x(:) 
- 
-   ! Local variables
-   INTEGER :: np, nq, ndim, nsurf, isurf, ip, i
-   REAL(KIND=Rkind) :: Tval
-   REAL(KIND=Rkind), ALLOCATABLE :: GGdef(:,:)
-   COMPLEX(KIND=Rkind), ALLOCATABLE ,TARGET :: work_array(:) ! Work array for the operation
- 
-   ! Pointers for easier array manipulation
-   COMPLEX(KIND=Rkind), POINTER :: Psi_gb(:,:), Psi_pb(:,:), Psi_pb_work(:,:)
- 
-   ! Get dimensions from input arrays
-   np    = SIZE(P, 1)
-   nq    = SIZE(Q, 1)  ! Corrected: Get nq from input argument Q
-   ndim  = SIZE(P, 2)
-   nsurf = SIZE(psi_p) / np ! Calculate number of surfaces/states
- 
-   ! Check output array size
-   IF (SIZE(psi_x) /= nq * nsurf) THEN
-     WRITE(*,*) 'ERROR in ApplyExpTdtAndTransformToPosition: size mismatch for psi_x'
-     WRITE(*,*) 'Expected size: ', nq * nsurf, ' Actual size: ', SIZE(psi_x)
-     STOP
-   END IF
- 
-   ! Allocate and get the inverse mass metric 
-   ALLOCATE(GGdef(ndim, ndim))
-   CALL get_Qmodel_GGdef(GGdef) 
- 
-   ! Map 1D vectors to 2D arrays using pointers for clarity
-   Psi_gb(1:nq, 1:nsurf)     => psi_x
-   Psi_pb(1:np, 1:nsurf)     => psi_p
- 
-   ! Allocate a work array and copy input psi_p into it
-   ALLOCATE(work_array(SIZE(psi_p)))
-   work_array(:) = psi_p(:) ! Copy the input wavefunction
-   Psi_pb_work(1:np, 1:nsurf) => work_array
- 
-   ! Apply exp(-i * T * dt) in momentum space
-   ! T = 0.5 * sum_{i} GGdef(i,i) * P_i^2
-   DO isurf = 1, nsurf
-     DO ip = 1, np
-       Tval = ZERO
-       ! Calculate kinetic energy T for this momentum point P(ip, :)
-       DO i = 1, ndim
-         Tval = Tval + HALF * GGdef(i, i) * P(ip, i)**2
-       END DO
-       ! Apply the propagator: Multiply the wavefunction by exp(-i*T*dt)
-       Psi_pb_work(ip, isurf) = Psi_pb_work(ip, isurf) * EXP(-EYE * Tval * dt)
-     END DO
-   END DO
- 
-   ! Inverse NUFFT: Transform from momentum (p) to position (x) space
-   DO isurf = 1, nsurf
-     CALL INV_NUFFT(Q, WQ, P, WP, Psi_pb_work(:, isurf), Psi_gb(:, isurf))
-   END DO
- 
-   ! Clean up
-   DEALLOCATE(work_array, GGdef)
-   ! Nullify pointers to avoid potential dangling references
-   NULLIFY(Psi_gb, Psi_pb, Psi_pb_work)
- 
- END SUBROUTINE ApplyExpTdtAndTransformToPosition
-
-
-
 
    
     SUBROUTINE d2psi1D_cplx(d2GGB,GGB,Basis)
@@ -2859,7 +2672,7 @@ SUBROUTINE ApplyExpVdtAndTransformToMomentum(psi_x, psi_p, V, dt, Q, WQ, P, WP,t
     TYPE(Basis_t),INTENT(IN)                                   :: Basis
     
     !locals variables---------------------------------------------------------
-    LOGICAL, PARAMETER                                         :: debug = .true.
+    LOGICAL                                                    :: debug
   
     INTEGER                                                    :: i1,i3
     
@@ -2883,120 +2696,6 @@ SUBROUTINE ApplyExpVdtAndTransformToMomentum(psi_x, psi_p, V, dt, Q, WQ, P, WP,t
     
    
  END SUBROUTINE
-
- SUBROUTINE pdv2psi_nD(d2psi_g, psi_g, Basis,ib)
-
-    USE  QDUtil_m
-    TYPE(Basis_t), intent(in), target               :: Basis
-    complex(kind=Rkind), intent(in), target         :: psi_g(:)
-    complex(kind=Rkind), intent(inout), target      :: d2psi_g(:)
-    integer ,intent(in)                             :: ib
-    complex(kind=Rkind), pointer                    :: psi_ggb(:, :, :)
-    complex(kind=Rkind), pointer                    :: d2gg(:, :)
-    complex(kind=Rkind), pointer                    :: d2psi_ggb(:, :, :)
-    logical, parameter                              :: debug = .true.
-    integer                                         :: i1, i3, Ndim
-    integer, allocatable                            :: Iq1(:), Iq2(:), Iq3(:), Ib1(:), Ib2(:), Ib3(:)
-
-    IF (debug) THEN
-   
-       flush (out_unit)
-
-    END IF
-
-    Ndim = size(Basis%tab_basis)
-
-    call Calc_index(Ib1, Ib2, Ib3, Iq1, Iq2, Iq3, Basis)
-    d2psi_g(:) = CZERO
-
-
-       d2psi_ggb(1:Iq1(ib), 1:Iq2(ib), 1:Iq3(ib)) => d2psi_g
-       psi_ggb(1:Iq1(ib), 1:Iq2(ib), 1:Iq3(ib)) => psi_g
-       d2gg(1:Iq2(ib), 1:Iq2(ib)) => Basis%tab_basis(ib)%d2gg
-
-       DO i3 = 1, ubound(psi_ggb, dim=3)
-
-          DO i1 = 1, ubound(psi_ggb, dim=1)
-
-             d2psi_ggb(i1, :, i3) = d2psi_ggb(i1, :, i3) + matmul(d2gg, psi_ggb(i1, :, i3))
-
-          END DO
-
-       END DO
-
-    Deallocate (Ib1, Ib2, Ib3, Iq1, Iq2, Iq3)
-
-    IF (debug) THEN
-
-       flush (out_unit)
-
-    END IF
-
- END SUBROUTINE pdv2psi_nD
-
- SUBROUTINE psi_per_surf(Gsurf,G,Basis,ibe)
-
-     IMPLICIT NONE
-     TYPE(Basis_t), intent(in)                              :: Basis
-     complex(kind=Rkind), intent(in) ,target                :: G(:)
-     complex(kind=Rkind), intent(inout) ,allocatable        :: Gsurf(:)
-     integer  , intent(in)                                  :: ibe
-     
-     complex(kind=Rkind), pointer                           :: psi_gb(:, :)
-     integer                                                :: nq,nsurf
-
-     IF(Allocated(Gsurf)) deallocate(Gsurf)
-
-     nq = Basis%nq
-     nsurf = Basis%tab_basis(size(Basis%tab_basis))%nb
-     allocate(Gsurf(nq))
-     Gsurf = CZERO
-
-      psi_gb(1:nq, 1:nsurf) => G
-    
-      Gsurf(1:nq) =  psi_gb(1:nq, ibe) 
-
-
-  END SUBROUTINE
-
-
-  SUBROUTINE Calc_reduced_Density_surf(Rdensity,G,Basis)
-
-     USE QDUtil_m
-
-    TYPE(Basis_t), intent(in)                                    :: Basis
-    complex(Kind=Rkind),intent(in)                               :: G(:)                                         
-   TYPE(REDUCED_DENSIRY_t),intent(inout)                         :: Rdensity           
-
-    !Locals variables ----------------------------------------------------------------------------
-
-    integer, allocatable                                         :: Tab_iq(:)
-    integer                                                      :: ndim, Iq,inb,ib
-    real(Kind=Rkind)                                             :: W
-    logical                                                      :: Endloop
-      ndim  = SIZE(Basis%tab_basis) - 1
-      allocate (Tab_iq(ndim))
-      call Init_tab_ind(Tab_iq, Basis%NDindexq) 
-         Iq = 0
-         DO
-            Iq = Iq + 1
-
-            CALL increase_NDindex(Tab_iq, Basis%NDindexq, Endloop)
-            IF (Endloop) exit
-             W = ONE
-            DO inb = 1, ndim  
-               W = W*Basis%tab_basis(inb)%w(Tab_iq(inb))
-            END DO
-            If(ndim ==1) then
-               Rdensity%prob(Iq) = Rdensity%prob(Iq) + conjg(G(Iq))*G(Iq)*W
-            Else
-               DO ib = 1, ndim
-                   Rdensity%tab_prob(ib)%prob(Tab_iq(ib)) = Rdensity%tab_prob(ib)%prob(Tab_iq(ib)) + conjg(G(Iq))*G(Iq)*W
-               END DO
-            End If
-         END DO            
-      Deallocate(Tab_iq)
- END SUBROUTINE 
 
  SUBROUTINE Rdensity_alloc(Rdensity,Basis)
      
@@ -3068,32 +2767,6 @@ SUBROUTINE ApplyExpVdtAndTransformToMomentum(psi_x, psi_p, V, dt, Q, WQ, P, WP,t
        
 END SUBROUTINE
 
- SUBROUTINE Calc_Rdensity_Tot(Rdensity,Basis)
-    
-  USE  QDUtil_m  
-  TYPE(REDUCED_DENSIRY_t),intent(inout)         :: Rdensity
-  TYPE(Basis_t), intent(in), target             :: Basis
-
-  integer                                       :: ndim,Ib
-
-  ndim  = SIZE(Basis%tab_basis) - 1
-
-  allocate(Rdensity%Norm(ndim))
-      
-
-       Rdensity%Norm(:) = ZERO
-  
-     DO Ib=1,ndim
-       
-           Rdensity%Norm(Ib) = sum(Rdensity%tab_prob(Ib)%prob(:))
-  
-     END DO
-
-     Write(*,*) 'RedTot',Rdensity%Norm(:)
-
-
-END SUBROUTINE
-
 
  SUBROUTINE Rdensity_Dealloc(Rdensity,Basis)
     
@@ -3116,101 +2789,6 @@ END SUBROUTINE
 
   IF (allocated(Rdensity%tab_prob)) Deallocate(Rdensity%tab_prob)
        
-END SUBROUTINE
-
- SUBROUTINE Calc_reduced_density(Rdensity,B,Basis)
-      USE  QDUtil_m
-      TYPE(Basis_t), intent(in), target               :: Basis
-      complex(kind=Rkind), intent(in), target         :: B(:)
-      TYPE(REDUCED_DENSIRY_t),intent(inout)           :: Rdensity
-
-        TYPE(REDUCED_DENSIRY_t)                       :: Rdensitytemp
-        complex(kind=Rkind),allocatable               :: G(:),Gsurf(:)
-        integer                                       :: nsurf,nq,ibe,ndim,ib
-
-         nsurf = Basis%tab_basis(size(Basis%tab_basis))%nb
-         nq = nsurf*Basis%nq
-         ndim = size(Basis%tab_basis)-1
-
-         call Rdensity_Dealloc(Rdensity,Basis)
-         call Rdensity_alloc(Rdensity,Basis)          
-         allocate(G(nq))
-         CALL BasisTOGrid_nD_cplx(G,B,Basis)
-        
-       DO ibe = 1,nsurf
-
-          CALL psi_per_surf(Gsurf,G,Basis,ibe)
-          call  Rdensity_alloc(Rdensitytemp,Basis)
-          CALL Calc_reduced_Density_surf(Rdensitytemp,Gsurf,Basis)
-           If(ndim==1) then
-             Rdensity%prob(:)  = Rdensity%prob(:)+Rdensitytemp%prob(:)
-          Else
-           Do ib =1, ndim
-              Rdensity%tab_prob(ib)%prob(:)  = Rdensity%tab_prob(ib)%prob(:)+Rdensitytemp%tab_prob(ib)%prob(:)
-           END DO
-          End If
-          call   Rdensity_Dealloc(Rdensitytemp,Basis)
-          
-
-       END DO   
-      deallocate(G)
-
- END SUBROUTINE
-
-
- SUBROUTINE Calc_sum_psi(Int,G1,G2,Basis)
-   USE QDUtil_m
-   logical, parameter                            :: debug = .false.
-   TYPE(Basis_t),intent(in)                      :: Basis
-   complex(kind=Rkind), intent(in)   ,target     :: G1(:),G2(:)
-   complex(kind=Rkind) ,intent(inout)            :: Int
-   !Locals variabls ----------------------------------------------------------
-   complex(kind=Rkind), pointer                  :: psi_gb1(:, :),psi_gb2(:, :)
-   logical                                       :: Endloop_q
-   complex(kind=Rkind), allocatable              :: Intel(:)
-   real(kind=Rkind), allocatable                 :: Nel(:)
-   real(kind=Rkind)                              :: W
-   integer, allocatable                          :: Tab_iq(:)
-   integer                                       :: iq, inbe,inb,nq,nsurf,ndim
-   IF (debug) THEN
-      write (out_unit, *) 'Beging Evaluating integral'
-      flush (out_unit)
-   END IF
-   nq = Basis%nq
-   nsurf = Basis%tab_basis(size(Basis%tab_basis))%nb
-   ndim = size(Basis%tab_basis) - 1
-   allocate (Nel(nsurf))
-   allocate (Intel(nsurf)) 
-   allocate (Tab_iq(ndim))
-   psi_gb1(1:nq,1:nsurf) => G1
-   psi_gb2(1:nq,1:nsurf) => G2
- Nel(:) = ZERO
- Intel(:)=ZERO
- Int = ZERO
- DO inbe = 1, Basis%tab_basis(size(Basis%tab_basis))%nb !electronic state
-    Intel(inbe) = CZERO
-    Call Init_tab_ind(Tab_iq, Basis%NDindexq)
-    iq = 0
-    DO
-       iq = iq + 1
-       CALL increase_NDindex(Tab_iq, Basis%NDindexq, Endloop_q)
-       IF (Endloop_q) exit
-      
-        W = ONE
-        DO inb = 1, ndim
-           W = W*Basis%tab_basis(inb)%w(tab_iq(inb))
-        END DO
-       Nel(inbe) = Nel(inbe) + REAL(CONJG(psi_gb1(iq, inbe))*psi_gb1(iq, inbe)*W,kind=Rkind)
-       Intel(inbe) = Intel(inbe) + REAL(CONJG(psi_gb1(iq, inbe))*psi_gb2(iq, inbe)*W,kind=Rkind)
-    END DO
- END DO
- Int = sum(Intel)/(Sum(Nel)**2)
- Deallocate (Tab_iq)
- Deallocate(Intel,Nel)
- IF (debug) THEN
-    write (out_unit, *) 'END Evaluating integral'
-    flush (out_unit)
- END IF
 END SUBROUTINE
 
 
@@ -3270,5 +2848,6 @@ END SUBROUTINE
    END DO
  
  END SUBROUTINE Get_Basis_Parameters
+
 
 END MODULE Basis_m

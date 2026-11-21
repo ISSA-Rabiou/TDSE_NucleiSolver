@@ -1,0 +1,92 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# H2O_PJT minimum, en coordonnées primitives (R1, R2, a).
+R1_MIN=1.8102076015368764
+R2_MIN=1.8102076015368764
+A_MIN=1.8238629061636986
+
+# dans les coordonnées actives (a, R+, R-).
+DELTA_SYM=0.06
+DELTA_ANTISYM=0.02
+DELTA_FLEXION=0.04
+
+# Avec R+ = (R1+R2)/2 et R- = (R1-R2)/2 :
+# R1 = R+ + R-, R2 = R+ - R-.
+QEQ_R1=$(echo "$R1_MIN + $DELTA_SYM + $DELTA_ANTISYM" | bc -l)
+QEQ_R2=$(echo "$R2_MIN + $DELTA_SYM - $DELTA_ANTISYM" | bc -l)
+QEQ_A=$(echo "$A_MIN + $DELTA_FLEXION" | bc -l)
+
+# Largeurs converties depuis les deux largeurs indépendantes R+ et R-.
+# Le format defWP0 étant diagonal, il ne peut pas reproduire leur très faible
+# covariance résiduelle en (R1,R2)
+SIGMA_R1=0.25556132195808830
+SIGMA_R2=0.25556132195808830
+SIGMA_A=0.30696837792960352
+
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+ROOT_DIR="$(cd -- "$SCRIPT_DIR/.." && pwd)"
+if [[ $# -ne 2 ]]; then
+  echo "Usage: $0 NB DT" >&2
+  echo "Exemple: $0 10 1.0" >&2
+  exit 2
+fi
+NB=$1
+DT=$2
+NQ=$((NB + 5))
+GWPSOURCE=${GWPSOURCE:-input}
+RESULT_DIR="$SCRIPT_DIR/results_H2OPJT_HAGFTF_Normal_${GWPSOURCE}_nb${NB}_dt${DT}"
+mkdir -p "$RESULT_DIR"
+cd "$RESULT_DIR"
+
+"$ROOT_DIR/TD_SCHROD.x" > run.log 2>&1 <<EOF
+&coordQMLpot
+  coord_type = 'CURV'
+  pot_itQtransfo = -1
+  construction_type = 'developed'
+  sym_type = 'SYM'
+  model_type = 'QML'
+  pot0 = 0.0
+/
+&system
+  printlev = 2
+/
+&variables
+  Old_Qtransfo = F
+  nb_Qtransfo = 2
+  WriteT = F
+  Cart_Type = 'BF'
+  JJ = 0
+/
+&Coord_transfo name_transfo='zmat' nat=3 /
+O
+H 1
+H 1 2
+&Coord_transfo name_transfo='active' /
+1 1 1
+&minimum /
+R1 $R1_MIN
+R2 $R2_MIN
+a2 $A_MIN
+&potential
+  model_name = 'H2O_PJT'
+  option = 1
+  adiabatic = F
+  nsurf = 1
+  ndim = 3
+/
+&basis_nd name='dp' nb_basis=4 /
+&basis_nd name='HO' nb=$NB nq=$NQ use_initial_gwp=T debug=F /
+&basis_nd name='HO' nb=$NB nq=$NQ use_initial_gwp=T debug=F /
+&basis_nd name='HO' nb=$NB nq=$NQ use_initial_gwp=T debug=F /
+&basis_nd name='el' nb=1 /
+&defGWP ndim=3 Elecindex=1 Coef=(1.0,0.0) source='$GWPSOURCE' /
+ &defWP0 sigma=$SIGMA_R1 Beta=0.0 Qeq=$QEQ_R1 imp_k=0.0 gamma=0.0 /
+ &defWP0 sigma=$SIGMA_R2 Beta=0.0 Qeq=$QEQ_R2 imp_k=0.0 gamma=0.0 /
+ &defWP0 sigma=$SIGMA_A Beta=0.0 Qeq=$QEQ_A imp_k=0.0 gamma=0.0 /
+
+&prop t0=0.0 tf=100000.0 delta_t=$DT eps=1.e-20
+  max_iter=500 propa_name='hagedorn_taylor' Beta=F P=T renorm=F
+  write_E=T write_Norm=T write_auto_cor=T write_validation=T debug=F
+  restart=F checkpoint=T checkpoint_every=10 checkpoint_file='TD_SCHROD.restart' /
+EOF

@@ -35,7 +35,7 @@ module HagedornOverlap_m
   public :: overlap00
   public :: build_overlap_matrix
   public :: contract_overlap_matrix, build_legacy_overlap_matrix_1d
-  public :: Cmat_to_QP, hermitian,maxabs_mat,Calc_S_Bourquin522
+  public :: hermitian,Calc_S_Bourquin522
   public :: Calc_S_algebraic_genfunc,Calc_S_numeric_realgrid
   interface
     subroutine zgetrf(m, n, a, lda, ipiv, info)
@@ -63,17 +63,6 @@ module HagedornOverlap_m
       complex(KIND=Rkind), intent(inout) :: b(ldb, *)
       integer, intent(out) :: info
     end subroutine zgesv
-
-    subroutine zheev(jobz, uplo, n, a, lda, w, work, lwork, rwork, info)
-      import :: Rkind
-      character(len=1), intent(in) :: jobz, uplo
-      integer, intent(in) :: n, lda, lwork
-      complex(KIND=Rkind), intent(inout) :: a(lda,*)
-      real(KIND=Rkind), intent(out) :: w(*)
-      complex(KIND=Rkind), intent(inout) :: work(*)
-      real(KIND=Rkind), intent(inout) :: rwork(*)
-      integer, intent(out) :: info
-    end subroutine zheev
   end interface
 
 contains
@@ -617,75 +606,6 @@ contains
     end do
     if (pos == 0) error stop 'smallest_positive_component_temp: no positive component found.'
   end function smallest_positive_component_temp
-
-  subroutine Cmat_to_QP(Cmat, Qmat, Pmat)
-    complex(KIND=Rkind), intent(in) :: Cmat(:,:)
-    complex(KIND=Rkind), allocatable, intent(out) :: Qmat(:,:), Pmat(:,:)
-
-    integer :: ndim
-    complex(KIND=Rkind), allocatable :: ImC(:,:), sqrtImC(:,:)
-
-    ndim = size(Cmat,1)
-    if (size(Cmat,2) /= ndim) error stop 'Cmat_to_QP: matrix must be square.'
-
-    allocate(ImC(ndim,ndim))
-    ImC = (Cmat - conjg(transpose(Cmat))) / (TWO*EYE)
-
-    sqrtImC = matrix_sqrt_hermitian(ImC)
-    Qmat = matrix_inverse(sqrtImC)
-
-    allocate(Pmat(ndim,ndim))
-    Pmat = matmul(Cmat,Qmat)
-  end subroutine Cmat_to_QP
-
-  function matrix_sqrt_hermitian(A) result(S)
-    complex(KIND=Rkind), intent(in) :: A(:,:)
-    complex(KIND=Rkind), allocatable :: S(:,:)
-
-    integer :: n, info, lwork, i
-    complex(KIND=Rkind), allocatable :: U(:,:), work(:)
-    real(KIND=Rkind), allocatable :: eig(:), rwork(:)
-    complex(KIND=Rkind) :: work_query(1)
-
-    n = size(A,1)
-    if (size(A,2) /= n) error stop 'matrix_sqrt_hermitian: matrix must be square.'
-
-    allocate(U(n,n), eig(n), rwork(max(1,3*n-2)))
-    U = A
-
-    lwork = -1
-    call zheev('V','U',n,U,n,eig,work_query,lwork,rwork,info)
-    if (info /= 0) error stop 'matrix_sqrt_hermitian: workspace query failed.'
-
-    lwork = max(1, int(real(work_query(1), KIND=Rkind)))
-    allocate(work(lwork))
-
-    call zheev('V','U',n,U,n,eig,work,lwork,rwork,info)
-    if (info /= 0) error stop 'matrix_sqrt_hermitian: diagonalization failed.'
-
-    do i = 1, n
-      if (eig(i) <= ZERO) error stop 'matrix_sqrt_hermitian: matrix not positive definite.'
-    end do
-
-    allocate(S(n,n))
-    S = CZERO
-    do i = 1, n
-      S = S + sqrt(eig(i)) * outer_product(U(:,i), conjg(U(:,i)))
-    end do
-
-  contains
-    function outer_product(x, y) result(mat)
-      complex(KIND=Rkind), intent(in) :: x(:), y(:)
-      complex(KIND=Rkind) :: mat(size(x), size(y))
-      integer :: i, j
-      do i = 1, size(x)
-        do j = 1, size(y)
-          mat(i,j) = x(i) * y(j)
-        end do
-      end do
-    end function outer_product
-  end function matrix_sqrt_hermitian
-
     pure subroutine overlap_core_coeffs(q0, alpha0, p0, qt, alphat, pt, Acoef, Bcoef, Ccoef, s0, st)
 
     real(kind=Rkind), intent(in) :: q0, p0, qt, pt
@@ -738,19 +658,6 @@ contains
     end do
 
   end function fact_int
-
-
-
-  pure real(kind=Rkind) function maxabs_mat(A) result(v)
-
-    complex(kind=Rkind), intent(in) :: A(:,:)
-
-    v = maxval(abs(A))
-
-  end function maxabs_mat
-
-
-
     subroutine Calc_S_numeric_realgrid(S, nb, nq, Q0, SQ0, A0, P0, Qt, SQt, At, Pt)
 
     integer, intent(in) :: nb, nq

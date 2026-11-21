@@ -36,6 +36,7 @@ module HagedornDiracFrenkel_m
   !!=========================================================================
   use QDUtil_m
   use HagedornLinalg_m
+  use HagedornQuadrature_m, only: gauss_hermite_rule, tensor_product_grid
   use NDindex_hagedorn_m
   use HagedornBasis_m
   implicit none

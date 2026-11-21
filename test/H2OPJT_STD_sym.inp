@@ -1,0 +1,98 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Centre de référence qmodel déjà exprimé dans l'ordre actif (a, R+, R-).
+# Valeurs : angle d'équilibre, demi-somme des longueurs, demi-différence.
+Q1=1.8238629061637734  # a_eq
+Q2=1.8102076015368762  # Rplus_eq
+Q3=0.0                 # Rminus_eq
+
+# Déplacements exprimés directement dans le repère actif.
+delta_sym=0.06        # déplacement de R+
+delta_antisym=0.02     # déplacement de R-
+delta_flexion=0.04      # déplacement de a
+
+# En source=input, TD_SCHROD utilise ces sigma ainsi que les centres ci-dessous.
+# Ces largeurs sont celles obtenues par InitQModelBasisParam pour ce PES et ce repère.
+SIGMA_A=0.30696837792960352
+SIGMA_RPLUS=0.18058183943420511
+SIGMA_RMINUS=0.18083635847783655
+
+# Pour source=input : paquet qmodel au centre si les deltas valent zéro,
+# ou même paquet déplacé si les deltas sont non nuls.
+Qeq_a=$(echo "$Q1 + $delta_flexion" | bc -l)
+Qeq_Rplus=$(echo "$Q2 + $delta_sym" | bc -l)
+Qeq_Rminus=$(echo "$Q3 + $delta_antisym" | bc -l)
+
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+ROOT_DIR="$(cd -- "$SCRIPT_DIR/.." && pwd)"
+if [[ $# -ne 2 ]]; then
+  echo "Usage: $0 NB DT" >&2
+  exit 2
+fi
+NB=$1
+DT=$2
+NQ=$((NB + 5))
+GWPSOURCE=${GWPSOURCE:-input}
+RESULT_DIR="$SCRIPT_DIR/results_H2OPJT_STD_sym_${GWPSOURCE}_nb${NB}_dt${DT}"
+mkdir -p "$RESULT_DIR"
+cd "$RESULT_DIR"
+
+"$ROOT_DIR/TD_SCHROD.x" > "run.log" 2>&1 <<EOF
+&coordQMLpot
+  coord_type = 'CURV'
+  pot_itQtransfo = 1
+  construction_type = 'developed'
+  sym_type = 'SYM'
+  model_type = 'QML'
+  pot0 = 0.0
+/
+&system
+  printlev = 2
+/
+&variables
+  Old_Qtransfo = F
+  nb_Qtransfo = 3
+  WriteT = F
+  Cart_Type = 'BF'
+  JJ = 0
+/
+&Coord_transfo name_transfo='zmat' nat=3 /
+O
+H 1
+H 1 2
+&Coord_transfo name_transfo='linear' /
+sym    a         R+    R-
+3
+1      0.        1.    1.
+2      0.        1.   -1.
+3      1.        0.    0.
+&Coord_transfo name_transfo='active' /
+1 1 1
+&minimum /
+a2 $Q1
+Rplus $Q2
+Rminus $Q3
+&potential
+  model_name = 'H2O_PJT'
+  option = 1
+  adiabatic = F
+  nsurf = 1
+  ndim = 3
+/
+&basis_nd name='dp' nb_basis=4 /
+&basis_nd name='HO' nb=$NB nq=$NQ use_initial_gwp=T debug=F /
+&basis_nd name='HO' nb=$NB nq=$NQ use_initial_gwp=T debug=F /
+&basis_nd name='HO' nb=$NB nq=$NQ use_initial_gwp=T debug=F /
+&basis_nd name='el' nb=1 /
+
+&defGWP ndim=3 Elecindex=1 Coef=(1.0,0.0) source='$GWPSOURCE' /
+ &defWP0 sigma=$SIGMA_A Beta=0.0 Qeq=$Qeq_a imp_k=0.0 gamma=0.0 /
+ &defWP0 sigma=$SIGMA_RPLUS Beta=0.0 Qeq=$Qeq_Rplus imp_k=0.0 gamma=0.0 /
+ &defWP0 sigma=$SIGMA_RMINUS Beta=0.0 Qeq=$Qeq_Rminus imp_k=0.0 gamma=0.0 /
+
+&prop t0=0.0 tf=100000.0 delta_t=$DT eps=1.e-20
+  max_iter=500 propa_name='standard_taylor' Beta=T P=T renorm=F
+  write_E=T write_Norm=T write_auto_cor=T write_validation=T debug=F
+  restart=F checkpoint=T checkpoint_every=10 checkpoint_file='TD_SCHROD.restart' /
+EOF

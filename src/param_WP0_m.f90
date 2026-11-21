@@ -1,6 +1,7 @@
 
       MODULE param_WP0_m
       USE QDUtil_m
+      USE Basis_m, ONLY: Debug_Enabled, Basis_Debug_Active
       IMPLICIT NONE
 
         TYPE GWP1D_t
@@ -18,6 +19,7 @@
           integer                     :: ndim           = 1
           complex (kind=Rkind)        :: Coef           = CZERO
           integer                     ::    Elecindex   = 1
+          character(len=16)            :: source = 'input'
 
           TYPE (GWP1D_t), allocatable :: tab_GWP1D(:)
 
@@ -38,7 +40,7 @@
 
     !----- for debuging --------------------------------------------------
     character (len=*), parameter :: name_sub='Read_GWP1D'
-    logical, parameter :: debug =.FALSE.
+
     !logical, parameter :: debug =.TRUE.
     !-----------------------------------------------------------
 
@@ -65,11 +67,11 @@
         
            !----- for debuging --------------------------------------------------
            character (len=*), parameter :: name_sub='Write_GWP1D'
-           logical, parameter :: debug =.FALSE.
+
            !logical, parameter :: debug =.TRUE.
            !-----------------------------------------------------------
         
-           IF (debug) write(out_unit,*) 'Q0,sigma,imp_k,phase',           &
+           IF (Basis_Debug_Active() .OR. Debug_Enabled()) write(out_unit,*) 'Q0,sigma,imp_k,phase', &
                   GWP1D%Q0,GWP1D%sigma, GWP1D%Beta,GWP1D%imp_k,GWP1D%gamma
         
            write(out_unit,*)                                             &
@@ -86,7 +88,7 @@
            complex(kind=Rkind) :: At
            !----- for debuging --------------------------------------------------
            character (len=*), parameter :: name_sub='calc_GWP1D'
-           logical, parameter :: debug =.FALSE.
+
            !logical, parameter :: debug =.TRUE.
            !-----------------------------------------------------------
            At = complex((TWO/GWP1D%sigma**2),TWO*GWP1D%Beta)
@@ -106,14 +108,15 @@
           !------ initial WP definition -----------------------------
           integer                      :: i,Rerr
           integer                      ::  ndim,Elecindex
+          character(len=16)             :: source
 
           complex (kind=Rkind)            :: Coef
 
-          NAMELIST /defGWP/ ndim,Elecindex,Coef
+          NAMELIST /defGWP/ ndim,Elecindex,Coef,source
 
           !----- for debuging --------------------------------------------------
           character (len=*), parameter :: name_sub='Read_GWP'
-          logical, parameter :: debug =.FALSE.
+
           !logical, parameter :: debug =.TRUE.
           !-----------------------------------------------------------
 
@@ -121,6 +124,7 @@
          ndim            = 1
          Coef            = CONE
          Elecindex       = 1 
+         source          = 'input'
 
           read(nio,nml=defGWP,iostat=Rerr)
           IF (Rerr /= 0) THEN  
@@ -133,11 +137,24 @@
            GWP%ndim          = ndim
            GWP%Coef          = Coef
            GWP%Elecindex     = Elecindex
+           GWP%source        = TRIM(ADJUSTL(source))
+           CALL string_uppercase_TO_lowercase(GWP%source)
 
           allocate(GWP%tab_GWP1D(ndim))
-          DO i=1,ndim
-            CALL Read_GWP1D(GWP%tab_GWP1D(i))
-          END DO
+          SELECT CASE (TRIM(GWP%source))
+          CASE ('input')
+            DO i=1,ndim
+              CALL Read_GWP1D(GWP%tab_GWP1D(i))
+            END DO
+          CASE ('qmodel')
+            ! Consume the usual per-dimension records; the caller replaces Q0 and sigma
+            ! with values returned by InitQModelBasisParam. Empty &defWP0 / records suffice.
+            DO i=1,ndim
+              CALL Read_GWP1D(GWP%tab_GWP1D(i))
+            END DO
+          CASE DEFAULT
+            ERROR STOP "Read_GWP: source must be 'input' or 'qmodel'."
+          END SELECT
 
         END SUBROUTINE Read_GWP
 
@@ -149,7 +166,7 @@
          integer :: i
          !----- for debuging --------------------------------------------------
          character (len=*), parameter :: name_sub='calc_GWP'
-         logical, parameter :: debug =.FALSE.
+
          !logical, parameter :: debug =.TRUE.
          !-----------------------------------------------------------
 
@@ -168,11 +185,11 @@
         integer :: i
         !----- for debuging --------------------------------------------------
         character (len=*), parameter :: name_sub='Write_GWP'
-        logical, parameter :: debug =.FALSE.
+
         !logical, parameter :: debug =.TRUE.
         !-----------------------------------------------------------
       
-        write(out_unit,*) 'ndim,Elecindex,Coef',GWP%ndim , GWP%Elecindex , GWP%Coef
+        write(out_unit,*) 'ndim,Elecindex,Coef,source',GWP%ndim , GWP%Elecindex , GWP%Coef, TRIM(GWP%source)
         write(out_unit,'(a)') ' Qeq    Beta     sigma       imp_k       phase'
         DO i=1,size(GWP%tab_GWP1D)
           CALL Write_GWP1D(GWP%tab_GWP1D(i))
@@ -193,7 +210,7 @@
         
            !----- for debuging --------------------------------------------------
            character (len=*), parameter :: name_sub='Read_tab_GWP'
-           logical, parameter :: debug =.FALSE.
+
            !logical, parameter :: debug =.TRUE.
            !-----------------------------------------------------------
         
@@ -201,9 +218,7 @@
            DO i=1,nb_GWP
              CALL Read_GWP(Tab_GWP(i),nio)
            END DO        
-           CALL Write_Tab_GWP(Tab_GWP)
-        
-        
+           IF (Basis_Debug_Active() .OR. Debug_Enabled()) CALL Write_Tab_GWP(Tab_GWP)
          END SUBROUTINE Read_tab_GWP
 
 
@@ -213,7 +228,7 @@
            integer :: i
            !----- for debuging --------------------------------------------------
            character (len=*), parameter :: name_sub='Write_Tab_GWP'
-           logical, parameter :: debug =.FALSE.
+
            !logical, parameter :: debug =.TRUE.
            !-----------------------------------------------------------
         
@@ -230,7 +245,7 @@
           integer :: iGWP0
           !----- for debuging --------------------------------------------------
           character (len=*), parameter :: name_sub='calc_GWP'
-          logical, parameter :: debug =.FALSE.
+
           !logical, parameter :: debug =.TRUE.
           !-----------------------------------------------------------
           psi(:) = CZERO     

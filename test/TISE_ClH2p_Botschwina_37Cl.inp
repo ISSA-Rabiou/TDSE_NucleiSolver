@@ -1,0 +1,106 @@
+#!/usr/bin/env bash
+#
+# Test TISE du modèle QML ClH2+ de Botschwina pour H2-37Cl+.
+#
+# Usage:
+#   bash test/TISE_ClH2p_Botschwina.inp [option] [method] [nb] [nq]
+#
+# option : 1 = CEPA-1, 2 = CEPA-1 corrigée
+# method : dense, lanczos, davidson ou arpack
+# nb     : nombre de fonctions HO par coordonnée (défaut 12)
+# nq     : nombre de points de quadrature par coordonnée (défaut 12)
+#
+# Le papier CPL 2023 utilise une étude de convergence nb=9..12 et nq=12.
+# Dans Tnum, la notation AX sélectionne explicitement l'isotope A de X.
+
+set -u
+
+OPTION="${1:-2}"
+METHOD="${2:-arpack}"
+NB="${3:-12}"
+NQ="${4:-12}"
+
+case "$OPTION" in
+  1|2) ;;
+  *) echo "ERROR: option must be 1 or 2" >&2; exit 2 ;;
+esac
+case "$METHOD" in
+  dense|lanczos|davidson|arpack) ;;
+  *) echo "ERROR: method must be dense, lanczos, davidson or arpack" >&2; exit 2 ;;
+esac
+
+ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+OUT_DIR="$ROOT_DIR/test/results_TISE_ClH2p_Botschwina_37Cl_opt${OPTION}_${METHOD}_nb${NB}_nq${NQ}"
+mkdir -p "$OUT_DIR"
+cd "$OUT_DIR" || exit 1
+
+ENERGY_FILE="ClH2p_Botschwina_37Cl_opt${OPTION}_${METHOD}_energies.dat"
+TRANSITION_FILE="ClH2p_Botschwina_37Cl_opt${OPTION}_${METHOD}_transitions.txt"
+
+"$ROOT_DIR/TD_SCHROD.x" > "ClH2p_Botschwina.log" 2>&1 <<EOF
+&coordQMLpot
+  coord_type = 'CURV'
+  sym_type   = 'SYM'
+  model_type = 'QML'
+  pot0       = 0.0
+/
+
+&system
+  printlev = 2
+/
+
+&variables
+  Old_Qtransfo = F
+  nb_Qtransfo  = 2
+  WriteT       = F
+  Cart_Type    = 'BF'
+  JJ           = 0
+  Tana         = T
+  FortranForm  = F
+/
+
+! Isotopologue H2-37Cl+; Q(1)=R1, Q(2)=R2 in bohr, Q(3)=theta in radians.
+&Coord_transfo name_transfo='zmat' nat=3 /
+37Cl
+1H 1
+1H 1 2
+
+&Coord_transfo name_transfo='active' /
+1  1  1
+
+&minimum /
+R1 2.4623131523
+R2 2.4623131523
+a  1.6448681002
+
+&potential
+  pot_name  = 'ClH2p_Botschwina'
+  option    = ${OPTION}
+  adiabatic = F
+  nsurf     = 1
+  ndim      = 3
+/
+
+&basis_nd name='dp' nb_basis=4 /
+&basis_nd name='HO' nb=${NB} nq=${NQ} use_initial_gwp=T debug=F /
+&basis_nd name='HO' nb=${NB} nq=${NQ} use_initial_gwp=T debug=F /
+&basis_nd name='HO' nb=${NB} nq=${NQ} use_initial_gwp=T debug=F /
+&basis_nd name='el' nb=1 /
+
+&defGWP ndim=3 Elecindex=1 Coef=(1.,0.) /
+&defWP0 sigma=0.20 Beta=0.0 Qeq=2.4623131523 imp_k=0.0 gamma=0.0 /
+&defWP0 sigma=0.20 Beta=0.0 Qeq=2.4623131523 imp_k=0.0 gamma=0.0 /
+&defWP0 sigma=0.20 Beta=0.0 Qeq=1.6448681002 imp_k=0.0 gamma=0.0 /
+
+&prop dynamics='TISE'
+  tise_method='${METHOD}' tise_nstates=50 tise_max_iter=500 tise_tol=1.e-11
+  energy_unit='cm-1' tise_energy_file='${ENERGY_FILE}'
+  tise_transition_file='${TRANSITION_FILE}' /
+**
+EOF
+
+status=$?
+if [ "$status" -ne 0 ]; then
+  echo "ClH2p_Botschwina test failed; see $OUT_DIR/ClH2p_Botschwina.log" >&2
+fi
+exit "$status"
