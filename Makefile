@@ -30,7 +30,7 @@ OPT := 1
 OMP := 1
 ## Lapack/blas/mkl? Empty: default with Lapack; 0: without Lapack; 1 with Lapack
 LAPACK := 1
-## Arpack? Empty: default No Arpack; 0: without Arpack; 1 with Arpack
+## Arpack? Empty/0: without Arpack; 1: with Arpack
 ARPACK := 0
 ## force the default integer (without kind) during the compillation.
 ## default 4: , INT=8 (for kind=8)
@@ -82,7 +82,7 @@ endif
 LLAPACK := $(LAPACK)
 
 ifeq ($(ARPACK),)
-  override ARPACK := 1
+  override ARPACK := 0
 endif
 # We cannot use ARPACK without lapack
 ifeq ($(LAPACK),0)
@@ -95,15 +95,38 @@ ifneq ($(ARPACK),$(filter $(ARPACK),0 1))
 endif
 AARPACK := $(ARPACK)
 
-# On macOS Apple Silicon, Homebrew keeps ARPACK and OpenBLAS in keg-only
-# prefixes.  Detect these prefixes when the user did not provide them on the
-# command line.  Explicit ARPACK_PREFIX/BLAS_PREFIX values always take
-# precedence, which also supports MacPorts and manual installations.
-ifeq ($(strip $(ARPACK_PREFIX)),)
-  ARPACK_PREFIX := $(shell if command -v brew >/dev/null 2>&1; then brew --prefix arpack 2>/dev/null; fi)
+# ARPACK-NG is installed locally in EXT_Lib when ARPACK=1.  No Homebrew,
+# MacPorts or system ARPACK path is probed.  ARPACK_LIB is a project-local
+# archive, built on the current OS/architecture by scripts/install-arpack.
+ARPACK_VERSION ?= 3.9.1
+ARPACK_ROOT := $(MAIN_path)/EXT_Lib/arpack-ng_loc
+ARPACK_PREFIX := $(ARPACK_ROOT)/install
+ARPACK_LIB := $(ARPACK_PREFIX)/lib/libarpack.a
+ARPACK_LIBDIR := $(ARPACK_PREFIX)/lib
+ARPACK_INCLUDEDIR := $(ARPACK_PREFIX)/include
+ARPACK_TARGET :=
+ifeq ($(ARPACK),1)
+  ARPACK_TARGET := $(ARPACK_LIB)
 endif
-ifeq ($(strip $(BLAS_PREFIX)),)
-  BLAS_PREFIX := $(shell if command -v brew >/dev/null 2>&1; then brew --prefix openblas 2>/dev/null; fi)
+
+# Optional prefixes are supplied by the user (Homebrew is deliberately not
+# probed here).  This also supports an explicit installation in EXT_Lib or
+# any other prefix on Linux, macOS, BSD, etc.  ARPACK paths are only used when
+# ARPACK=1, so ARPACK=0 cannot accidentally search or link ARPACK.
+ifeq ($(strip $(ARPACK_LIBDIR)),)
+  ifneq ($(strip $(ARPACK_PREFIX)),)
+    ARPACK_LIBDIR := $(ARPACK_PREFIX)/lib
+  endif
+endif
+ifeq ($(strip $(ARPACK_INCLUDEDIR)),)
+  ifneq ($(strip $(ARPACK_PREFIX)),)
+    ARPACK_INCLUDEDIR := $(ARPACK_PREFIX)/include
+  endif
+endif
+ifeq ($(strip $(LAPACK_LIBDIR)),)
+  ifneq ($(strip $(BLAS_PREFIX)),)
+    LAPACK_LIBDIR := $(BLAS_PREFIX)/lib
+  endif
 endif
 
 ifneq ($(INT),$(filter $(INT),4 8))
@@ -134,6 +157,7 @@ ifeq ($(RKIND),real128)
 endif
 export RKIND WITHRK16 INT  LAPACK   ARPACK   FC  OPT  OMP BRANCH
 export      WWITHRK16     LLAPACK  AARPACK  FFC OOPT OOMP
+export ARPACK_LIBDIR ARPACK_INCLUDEDIR LAPACK_LIBDIR ARPACK_VERSION
 
 #=================================================================================
 # extension for the library (.a), objects and modules directory
@@ -166,10 +190,13 @@ ifneq ($(EXTLIB_LIST),)
 endif
 # We use the full TnunTana library
 EXTLib := $(MAIN_path)/EXT_Lib/Tnum-Tana/libTnum-TanaFull$(ext_obj).a
+# Tnum-Tana calls the QuantumModelLib C/Fortran interface.  It is a
+# separate archive and must be present even when ARPACK is disabled.
+QMLLib := $(MAIN_path)/EXT_Lib/QuantumModelLib/libQuantumModelLibFull$(ext_obj).a
 # special files
 EXT_SRC  := calc_f2_f1Q.f90 Sub_X_TO_Q_ana.f90 Calc_Tab_dnQflex.f90 read_para.f90
 EXT_OBJ  := $(EXT_SRC:.f90=.o)
-EXT_OBJ  += sub_system.o #it has to be added manually because this source file has the extension .f or .f90
+EXT_OBJ  += sub_system.o
 ifeq ($(DDEBUG),t)
   $(info ***********EXT_SRC:         $(EXT_SRC))
   $(info ***********EXT_OBJ files:   $(EXT_OBJ))
@@ -181,26 +208,50 @@ EXT_OBJ  := $(addprefix $(OBJ_DIR)/,$(EXT_OBJ))
 # =====================================================================================
 FFAGS +=  $(EXTMod) 
 
-LIBS := $(EXTLib)
-# macOS ld does not always rescan all members of the monolithic Tnum-Tana
-# archive.  This leaves QDUtil/Tnum symbols unresolved even though the
-# corresponding object files are present in the archive.  force_load is
-# restricted to Darwin; GNU ld on Linux keeps the normal archive behavior.
+LIBS := $(EXTLib) $(QMLLib)
 HOST_OS := $(shell uname -s)
+## Apple ld does not always rescan all members of the monolithic Tnum-Tana
+## archive.  Load every member on Darwin so the QDUtil symbols embedded in
+## that archive are available.  Do not link QDUtilLib separately: Tnum-Tana
+## already contains it, and doing so would create duplicate symbols.
 ifeq ($(HOST_OS),Darwin)
-  LDFLAGS := -Wl,-force_load,$(EXTLib)
+  # Do not allow an inherited FORCE_LOAD=0 to reintroduce unresolved symbols
+  # from the other members of the monolithic Tnum-Tana archive.
+  override FORCE_LOAD := 1
+else
+  FORCE_LOAD ?= 0
+endif
+ifeq ($(HOST_OS),Darwin)
+  ifeq ($(FORCE_LOAD),1)
+    LDFLAGS := -Wl,-force_load,$(EXTLib) $(QMLLib)
+  else
+    LDFLAGS := $(LIBS)
+  endif
 else
   LDFLAGS := $(LIBS)
 endif
-ifneq ($(strip $(ARPACK_PREFIX)),)
-  LDFLAGS += -L$(ARPACK_PREFIX)/lib
+
+# On Darwin, -force_load extracts every member of the Tnum-Tana archive.
+# The five helper sources below are also present in that archive, so keeping
+# their application objects in the link creates duplicate symbols (ld: ...
+# duplicate symbols). They are not needed separately when force_load is active.
+ifeq ($(HOST_OS),Darwin)
+  ifeq ($(FORCE_LOAD),1)
+    EXT_OBJ :=
+  endif
 endif
-ifneq ($(strip $(BLAS_PREFIX)),)
-  LDFLAGS += -L$(BLAS_PREFIX)/lib
-endif
-LDFLAGS += -llapack -lblas
 ifeq ($(ARPACK),1)
-  LDFLAGS += -larpack
+  ifneq ($(strip $(ARPACK_LIBDIR)),)
+    LDFLAGS += -L$(ARPACK_LIBDIR)
+  endif
+  LDFLAGS += $(ARPACK_LIB)
+endif
+ifeq ($(LAPACK),1)
+  ifneq ($(strip $(LAPACK_LIBDIR)),)
+    LDFLAGS += -L$(LAPACK_LIBDIR)
+  endif
+  # Keep LAPACK/BLAS after ARPACK: this is required for static libarpack.a.
+  LDFLAGS += -llapack -lblas
 endif
 
 
@@ -215,12 +266,9 @@ FFLAGS := -cpp -Wall -Wextra -Wimplicit-interface \
           -J$(MOD_DIR) $(EXTMod)
 ifeq ($(ARPACK),1)
   FFLAGS += -D__ARPACK=1
-endif
-ifneq ($(strip $(ARPACK_PREFIX)),)
-  FFLAGS += -I$(ARPACK_PREFIX)/include
-endif
-ifneq ($(strip $(BLAS_PREFIX)),)
-  FFLAGS += -I$(BLAS_PREFIX)/include
+  ifneq ($(strip $(ARPACK_INCLUDEDIR)),)
+    FFLAGS += -I$(ARPACK_INCLUDEDIR)
+  endif
 endif
 #=================================================================================
 #=================================================================================
@@ -245,6 +293,7 @@ $(info )
 $(info ***********ExtLibDIR:       $(ExtLibDIR))
 $(info ***********EXTLib:          $(EXTLib))
 $(info ***********EXTMod:          $(EXTMod))
+$(info ***********LDFLAGS:         $(LDFLAGS))
 $(info ***********************************************************************)
 # =====================================================================================
 # Main program
@@ -288,7 +337,7 @@ lib: $(TARGET)
 # Link executable
 # =====================================================================================
 
-$(TARGET): $(OBJ_DIR)/$(MAIN).o $(OBJ) | $(LIBS)
+$(TARGET): $(OBJ_DIR)/$(MAIN).o $(OBJ) $(EXT_OBJ) | $(LIBS) $(ARPACK_TARGET)
 	$(FC) $(FFLAGS) -o $@ $^ $(LDFLAGS)
 
 # =====================================================================================
@@ -305,11 +354,28 @@ $(OBJ_DIR)/$(MAIN).o: $(MAIN_DIR)/$(MAIN).f90 | $(OBJ_DIR)
 $(OBJ_DIR)/%.o: $(SRC_DIR)/%.f90 | $(OBJ_DIR)
 	$(FC) $(FFLAGS) -c $< -o $@
 
+# These Tnum helper sources are part of the application link, but they live
+# in the downloaded Tnum-Tana tree rather than in src/.
+$(OBJ_DIR)/calc_f2_f1Q.o: $(MAIN_path)/EXT_Lib/Tnum-Tana/SRC/sub_operator_T/calc_f2_f1Q.f90 | $(OBJ_DIR)
+	$(FC) $(FFLAGS) -c $< -o $@
+
+$(OBJ_DIR)/Sub_X_TO_Q_ana.o: $(MAIN_path)/EXT_Lib/Tnum-Tana/SRC/sub_operator_T/Sub_X_TO_Q_ana.f90 | $(OBJ_DIR)
+	$(FC) $(FFLAGS) -c $< -o $@
+
+$(OBJ_DIR)/Calc_Tab_dnQflex.o: $(MAIN_path)/EXT_Lib/Tnum-Tana/SRC/sub_operator_T/Calc_Tab_dnQflex.f90 | $(OBJ_DIR)
+	$(FC) $(FFLAGS) -c $< -o $@
+
+$(OBJ_DIR)/read_para.o: $(MAIN_path)/EXT_Lib/Tnum-Tana/SRC/sub_pot/read_para.f90 | $(OBJ_DIR)
+	$(FC) $(FFLAGS) -c $< -o $@
+
+$(OBJ_DIR)/sub_system.o: $(MAIN_path)/EXT_Lib/Tnum-Tana/SRC/sub_pot/sub_system.f90 | $(OBJ_DIR)
+	$(FC) $(FFLAGS) -c $< -o $@
+
 # ============================================================
 # Dépendances manuelles entre modules (format $(OBJ_DIR)/...)
 # ============================================================
 
-$(TARGET):                    | $(OBJ_DIR) $(EXTLib)
+$(TARGET):                    | $(OBJ_DIR) $(EXTLib) $(QMLLib) $(ARPACK_TARGET)
 $(OBJ):                       | $(OBJ_DIR) $(EXTLib)
 
 $(OBJ_DIR)/Initial_GWP_Basis_m.o: \
@@ -472,6 +538,23 @@ getlib: $(EXTLib)
 #
 $(EXTLib):
 	$(MAKE) -C $(ExtLibDIR) -f $(MAIN_path)/scripts/makefile-extlib LIBA=$@ TD_SCHROD_ROOT=$(MAIN_path)
+
+# QuantumModelLib is called directly by Tnum-Tana and must be built with the
+# same compiler/options as the other external archive. It was present in
+# LIBS/QMLLib but had no make rule, so a clean build stopped before compiling
+# the application.
+$(QMLLib):
+	$(MAKE) -C $(ExtLibDIR) -f $(MAIN_path)/scripts/makefile-extlib LIBA=$@ TD_SCHROD_ROOT=$(MAIN_path)
+
+.PHONY: arpack
+arpack: $(ARPACK_TARGET)
+
+ifeq ($(ARPACK),1)
+$(ARPACK_LIB): $(MAIN_path)/scripts/install-arpack
+	@chmod +x $(MAIN_path)/scripts/install-arpack
+	$(MAIN_path)/scripts/install-arpack \
+	  "$(ARPACK_ROOT)" "$(ARPACK_VERSION)" "$(ARPACK_PREFIX)" "$(FC)"
+endif
 # =====================================================================================
 # Cleaning
 # =====================================================================================

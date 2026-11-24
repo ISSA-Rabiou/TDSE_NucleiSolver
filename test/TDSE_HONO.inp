@@ -1,0 +1,115 @@
+#!/usr/bin/env bash
+
+
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+ROOT_DIR="$(cd -- "$SCRIPT_DIR/.." && pwd)"
+
+if [[ $# -ne 2 ]]; then
+
+  echo "Usage: $0 NB DT" >&2
+
+  echo "Exemple: $0 10 1.0" >&2
+
+  exit 2
+
+fi
+Q1=2.6967325858163527
+Q2=1.8229121979747311
+Q4=2.2133264189824171
+del1=0.05
+del2=0.04
+del4=0.01
+
+R1=$(echo "$Q1 + $del1" | bc -l)
+R2=$(echo "$Q2 + $del2" | bc -l)
+R4=$(echo "$Q4 + $del4" | bc -l)
+
+NB=$1
+DT=$2
+NQ=$((NB + 3))
+
+GWPSOURCE=${GWPSOURCE:-qmodel}
+
+RESULT_DIR="$SCRIPT_DIR/results_TDSE_HONO_${GWPSOURCE}_nb${NB}_dt${DT}"
+
+mkdir -p "$RESULT_DIR"
+
+cd "$RESULT_DIR" || exit 1
+
+"$ROOT_DIR/TD_SCHROD.x" > "TDSE_HONO.log" 2>&1 <<EOF
+
+&system
+  printlev = 2
+/
+
+&coordQMLpot
+coord_type = 'CURV'
+pot_itQtransfo = -1
+construction_type = 'developed'
+sym_type   = 'SYM'
+model_type = 'QML'
+pot0       = 0.0
+/
+
+&potential
+  model_name = 'HONO'
+  option    = 1
+  adiabatic = F
+  nsurf     = 1
+  ndim      = 6
+/
+
+&variables
+  Old_Qtransfo = F
+  nb_Qtransfo  = 3
+  nrho         = 2
+  Cart_Type = 'BF'
+  JJ = 0          
+/
+
+&Coord_transfo name_transfo='bunch' nb_vect=3 inTOout=F /
+O O H H
+1 2   R1: O1->O2 (zBF)
+1 3   R2: O1->H3
+4 2   R3: H4->O2
+
+&Coord_transfo name_transfo='poly' cos_th=F /
+  &vector nb_vect=2 Frame=T /
+  &vector Frame=F /
+  &vector Frame=F /
+
+&Coord_transfo name_transfo='active' /
+1 1 1 1 1 1
+
+&minimum read_itQ0transfo=2 unit='angs' /
+ROO 1.4
+RH1 1.0
+A1  100.
+RH2 1.0
+A2  100.
+D   60.
+
+&basis_nd name='dp' nb_basis=7 /
+&basis_nd name='HO' nb=$NB nq=$NQ use_initial_gwp=T debug=F /
+&basis_nd name='HO' nb=$NB nq=$NQ use_initial_gwp=T debug=F /
+&basis_nd name='HO' nb=$NB nq=$NQ use_initial_gwp=T debug=F /
+&basis_nd name='HO' nb=$NB nq=$NQ use_initial_gwp=T debug=F /
+&basis_nd name='HO' nb=$NB nq=$NQ use_initial_gwp=T debug=F /
+&basis_nd name='HO' nb=$NB nq=$NQ use_initial_gwp=T debug=F /
+&basis_nd name='el' nb=1 /
+
+&defGWP ndim=6 Elecindex=1 Coef=(1.,0.)source='$GWPSOURCE' /
+ &defWP0 sigma= 0.19491027892874252 Beta=0.0 Qeq= $R1 imp_k=0.0 gamma=0.0 /
+ &defWP0 sigma= 0.25856393668211736 Beta=0.0 Qeq= $R2 imp_k=0.0 gamma=0.0 /
+ &defWP0 sigma= 0.24884597198956887 Beta=0.0 Qeq= 1.7776420181002541 imp_k=0.0 gamma=0.0 /
+ &defWP0 sigma= 0.22754434280808850 Beta=0.0 Qeq= $R4 imp_k=0.0 gamma=0.0 /
+ &defWP0 sigma= 0.17684836443314877 Beta=0.0 Qeq= 1.9315016999563468 imp_k=0.0 gamma=0.0 /
+ &defWP0 sigma= 0.44379545411652210 Beta=0.0 Qeq= 3.1415926535897931 imp_k=0.0 gamma=0.0 /
+
+
+
+&prop t0=0.0 tf=100.0 delta_t=$DT eps=1.e-20
+  max_iter=500 propa_name='hagedorn_taylor' Beta=T P=T renorm=T
+  write_E=T write_Norm=T write_auto_cor=T write_Pt=T write_Qt=T write_validation=T debug=F
+  restart=F checkpoint=T checkpoint_every=10 checkpoint_file='TD_SCHROD.restart' /
+EOF

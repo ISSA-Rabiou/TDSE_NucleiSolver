@@ -32,6 +32,14 @@ LibVersion := "https://github.com/lauvergn/"$(LibName)"/archive/refs/heads/"$(BR
 zipfile    := $(LibName).zip
 LibDir     := $(LibName)_loc
 
+# Source archives distributed with an application may already contain a
+# checked-out library under its canonical name (for example EXT_Lib/Tnum-Tana).
+# In that case use it directly. The old logic tried to create a link with the
+# same name and could create EXT_Lib/Tnum-Tana/Tnum-Tana_loc -> Tnum-Tana_loc.
+ifneq ($(wildcard $(LibName)/makefile)$(wildcard $(LibName)/Makefile),)
+  LibDir := $(LibName)
+endif
+
 $(LIBA): $(LibName)
 	@if [ "$(LibName)" = "Tnum-Tana" ]; then \
 	  python3 "$(TD_SCHROD_ROOT)/scripts/apply_tnum_bunchpoly_fix.py" \
@@ -39,10 +47,12 @@ $(LIBA): $(LibName)
 	fi
 	$(MAKE) -C $(LibDir) lib
 
+ifneq ($(LibDir),$(LibName))
 $(LibName): $(LibDir)
 	ln -s $(LibDir) $(LibName)
 	@test -L $(LibName) || (echo The linked directory $(LibName) does not exist ; exit 1)
 	@echo The directory, $(LibName), is linked to $(LibDir).
+endif
 
 $(LibDir):
 	curl -LJ $(LibVersion) --output $(LibName).zip

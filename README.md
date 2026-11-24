@@ -45,7 +45,7 @@ The choice `dynamics='TISE'` is handled before propagation. There is therefore n
 From the project root :
 
 ```bash
-make FC=gfortran OMP=1 LAPACK=1 ARPACK=1 QML=1
+make -j1 FC=gfortran OMP=1 LAPACK=1 ARPACK=1 QML=1
 ```
 
 Main options :
@@ -62,6 +62,25 @@ Main options :
 | `RKIND` | `real32`, `real64`, `real128` | real precision |
 
 LAPACK is required for dense diagonalization and small projected problems. ARPACK is required only for the TISE `arpack` method.
+
+When `ARPACK=1`, the Makefile automatically downloads ARPACK-NG 3.9.1,
+compiles it with `FC`, and installs it locally in `EXT_Lib/arpack-ng_loc`.
+The same command therefore works on Linux, macOS and other Unix-like systems;
+it does not use Homebrew or another system package manager:
+
+```bash
+make -j1 FC=gfortran OMP=1 LAPACK=1 ARPACK=1
+```
+
+The first build requires a Fortran compiler, CMake, `curl` or `wget`, `tar`,
+and BLAS/LAPACK. With `ARPACK=0`, ARPACK is neither downloaded nor linked.
+On macOS, the Makefile automatically uses `-force_load` for the single
+monolithic `libTnum-TanaFull.a` archive. This is necessary because Apple `ld`
+may not rescan all archive members and can otherwise report unresolved QDUtil
+symbols. QDUtil must not be linked a second time: it is already included in
+that archive, and linking it separately would create duplicate symbols. On
+other Unix-like systems, normal archive extraction is used. If necessary,
+`FORCE_LOAD=0` or `FORCE_LOAD=1` can still be supplied explicitly.
 
 The main target is :
 
@@ -743,14 +762,15 @@ dynamics='TISE'
 
 ### ARPACK not found during linking
 
-Recompile with `ARPACK=1` and check the installation :
+The project installs ARPACK locally. Re-run the standard command:
 
 ```bash
-brew --prefix arpack
-make FC=gfortran OMP=1 LAPACK=1 ARPACK=1 QML=1
+make -j1 FC=gfortran OMP=1 LAPACK=1 ARPACK=1
 ```
 
-On Linux, verify that `libarpack` is installed and accessible to the compiler.
+If this fails before compilation, install the generic prerequisites `cmake`,
+`curl` (or `wget`), `tar`, BLAS/LAPACK and a Fortran compiler. No
+Homebrew-specific command is needed.
 
 ### `tise_max_iter` insufficient
 
@@ -806,4 +826,3 @@ The basis is selected in the blocks `&basis_nd`, the dynamics is selected with `
 
 ## Contributing :
 Any contribution is welcome, just contact me at issagoudouya@gmail.com, I'm open to collaboration and feedback.
-

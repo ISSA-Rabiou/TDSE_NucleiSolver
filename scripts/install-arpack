@@ -1,0 +1,99 @@
+#!/bin/sh
+# Install a local, static ARPACK-NG in the project EXT_Lib directory.
+set -eu
+
+root=${1:?ARPACK source root is required}
+version=${2:?ARPACK version is required}
+prefix=${3:?ARPACK install prefix is required}
+fc=${4:-gfortran}
+
+src="$root/src/arpack-ng-$version"
+build="$root/build/$version-$fc"
+tarball="$root/arpack-ng-$version.tar.gz"
+url="https://github.com/opencollab/arpack-ng/archive/refs/tags/$version.tar.gz"
+
+mkdir -p "$root/src" "$root/build" "$prefix"
+
+if [ ! -f "$src/CMakeLists.txt" ]; then
+  tmp="$src.tmp.$$"
+  rm -rf "$tmp"
+  mkdir -p "$tmp"
+  if [ ! -s "$tarball" ]; then
+    echo "[ARPACK] Downloading ARPACK-NG $version"
+    if command -v curl >/dev/null 2>&1; then
+      curl -L --fail --silent --show-error "$url" -o "$tarball"
+    elif command -v wget >/dev/null 2>&1; then
+      wget -O "$tarball" "$url"
+    else
+      echo "[ARPACK] ERROR: curl or wget is required" >&2
+      exit 1
+    fi
+  fi
+  tar -xzf "$tarball" -C "$tmp" --strip-components=1
+  rm -rf "$src"
+  mv "$tmp" "$src"
+fi
+
+if ! command -v cmake >/dev/null 2>&1; then
+  echo "[ARPACK] ERROR: cmake is required to build ARPACK-NG" >&2
+  echo "[ARPACK] Install cmake with your system package manager, then rerun make." >&2
+  exit 1
+fi
+
+# A previous failed attempt may have left a CMakeCache.txt containing the
+# parent application's LDFLAGS (including libarpack.a, which does not exist
+# yet).  Never reuse that cache for the standalone ARPACK build.
+if [ -f "$build/CMakeCache.txt" ]; then
+  echo "[ARPACK] Removing stale CMake build cache"
+  rm -rf "$build"
+fi
+
+# Do not leak the parent project's LDFLAGS into ARPACK's CMake probes.  In
+# particular, the parent LDFLAGS contains libarpack.a itself, which does not
+# exist yet when CMake tests the C compiler on macOS.
+env \
+  LDFLAGS= CFLAGS= CPPFLAGS= FFLAGS= LIBS= \
+  CMAKE_C_FLAGS= CMAKE_CXX_FLAGS= CMAKE_Fortran_FLAGS= \
+  CMAKE_EXE_LINKER_FLAGS= CMAKE_SHARED_LINKER_FLAGS= \
+  cmake -S "$src" -B "$build" \
+  -DCMAKE_INSTALL_PREFIX="$prefix" \
+  -DCMAKE_Fortran_COMPILER="$fc" \
+  -DBUILD_SHARED_LIBS=OFF \
+  -DEXAMPLES=OFF \
+  -DTESTS=OFF \
+  -DMPI=OFF \
+  -DICB=OFF \
+  -DINTERFACE64=OFF
+
+cmake --build "$build" --parallel 1
+cmake --install "$build"
+
+lib=""
+for candidate in \
+  "$prefix/lib/libarpack.a" \
+  "$prefix/lib64/libarpack.a" \
+  "$build/lib/libarpack.a" \
+  "$build/libarpack.a"; do
+  if [ -f "$candidate" ]; then
+    lib=$candidate
+    break
+  fi
+done
+
+if [ -z "$lib" ]; then
+  lib=$(find "$prefix" "$build" -type f -name 'libarpack.a' -print -quit 2>/dev/null || true)
+fi
+
+if [ -z "$lib" ]; then
+  echo "[ARPACK] ERROR: libarpack.a was not produced" >&2
+  exit 1
+fi
+
+# Keep the canonical path used by the main Makefile, even on systems whose
+# CMake chooses lib64 or another install layout.
+mkdir -p "$prefix/lib"
+if [ "$lib" != "$prefix/lib/libarpack.a" ]; then
+  cp -f "$lib" "$prefix/lib/libarpack.a"
+fi
+
+echo "[ARPACK] Installed: $prefix/lib/libarpack.a"
