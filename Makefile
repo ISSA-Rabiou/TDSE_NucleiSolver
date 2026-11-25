@@ -32,6 +32,9 @@ OMP := 1
 LAPACK := 1
 ## Arpack? Empty/0: without Arpack; 1: with Arpack
 ARPACK := 0
+## QML is a compatibility option: the current application always uses the
+## Tnum/QML interface, so both QML=0 and QML=1 build QuantumModelLib.
+QML := 1
 ## force the default integer (without kind) during the compillation.
 ## default 4: , INT=8 (for kind=8)
 INT := 4
@@ -95,6 +98,18 @@ ifneq ($(ARPACK),$(filter $(ARPACK),0 1))
 endif
 AARPACK := $(ARPACK)
 
+ifeq ($(QML),)
+  override QML := 1
+endif
+ifneq ($(QML),$(filter $(QML),0 1))
+  $(info *********** QML:        $(QML))
+  $(info Possible values: 0, 1)
+  $(error ERROR: Incompatible option values)
+endif
+ifeq ($(QML),0)
+  $(info WARNING: QML=0 is accepted for compatibility; this application still requires QuantumModelLib.)
+endif
+
 # ARPACK-NG is installed locally in EXT_Lib when ARPACK=1.  No Homebrew,
 # MacPorts or system ARPACK path is probed.  ARPACK_LIB is a project-local
 # archive, built on the current OS/architecture by scripts/install-arpack.
@@ -155,7 +170,7 @@ ifeq ($(RKIND),real128)
     $(error ERROR: Incompatible RKIND and WITHRK16 option values)
   endif
 endif
-export RKIND WITHRK16 INT  LAPACK   ARPACK   FC  OPT  OMP BRANCH
+export RKIND WITHRK16 INT  LAPACK   ARPACK QML FC  OPT  OMP BRANCH
 export      WWITHRK16     LLAPACK  AARPACK  FFC OOPT OOMP
 export ARPACK_LIBDIR ARPACK_INCLUDEDIR LAPACK_LIBDIR ARPACK_VERSION
 
@@ -210,6 +225,10 @@ FFAGS +=  $(EXTMod)
 
 LIBS := $(EXTLib) $(QMLLib)
 HOST_OS := $(shell uname -s)
+## On Darwin, Tnum-TanaFull may retain references to members that are stored
+## in the individual external archives. Keep those archives in the link as
+## well; the normal linker will extract only the members still required.
+DARWIN_EXTLIBS := $(foreach LLIB,$(EXTLIB_LIST),$(if $(filter Tnum-Tana QuantumModelLib,$(LLIB)),,$(ExtLibDIR)/$(LLIB)/lib$(LLIB)$(ext_obj).a))
 ## Apple ld does not always rescan all members of the monolithic Tnum-Tana
 ## archive.  Load every member on Darwin so the QDUtil symbols embedded in
 ## that archive are available.  Do not link QDUtilLib separately: Tnum-Tana
@@ -223,7 +242,7 @@ else
 endif
 ifeq ($(HOST_OS),Darwin)
   ifeq ($(FORCE_LOAD),1)
-    LDFLAGS := -Wl,-force_load,$(EXTLib) $(QMLLib)
+    LDFLAGS := -Wl,-force_load,$(EXTLib) $(QMLLib) $(DARWIN_EXTLIBS)
   else
     LDFLAGS := $(LIBS)
   endif
@@ -257,13 +276,20 @@ endif
 
 # =====================================================================================
 FFLAGS := -cpp -Wall -Wextra -Wimplicit-interface \
-          -g -Og \
-          -fopenmp \
+          -g \
           -fcheck=all -fbacktrace \
           -finit-real=nan -finit-integer=-999999 \
           -ffree-line-length-none \
           -Warray-temporaries \
           -J$(MOD_DIR) $(EXTMod)
+ifeq ($(OPT),1)
+  FFLAGS += -Og
+else
+  FFLAGS += -O0
+endif
+ifeq ($(OMP),1)
+  FFLAGS += -fopenmp
+endif
 ifeq ($(ARPACK),1)
   FFLAGS += -D__ARPACK=1
   ifneq ($(strip $(ARPACK_INCLUDEDIR)),)

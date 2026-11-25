@@ -40,7 +40,7 @@ then
   exit 0
 fi
 
-if test ! -d $CleanDIR
+if test ! -d "$CleanDIR"
 then
   echo The directory $CleanDIR does not exist!
   exit 0
@@ -48,31 +48,56 @@ fi
 
 if [ "$CleanType" = "cleanall" ]
 then
-  cd $CleanDIR
+  cd "$CleanDIR" || exit 1
   for dirlib in $CleanList
   do
     echo $dirlib
 
-    #remove the link
-    rm -fr $dirlib
+    # Remove only the compatibility link. A real canonical directory may
+    # contain sources distributed with the application and must be preserved.
+    if test -L "$dirlib"
+    then
+      rm -f "$dirlib"
+    elif test -e "$dirlib"
+    then
+      echo "Keep existing source directory $dirlib"
+    fi
 
-    #clean the libraries
-    #test -d $dirlib"_loc" &&  make -C $dirlib"_loc" --silent cleanall RECCLEAN=$RecClean &> /dev/null
-     test -d $dirlib"_loc" && make -C $dirlib"_loc"           cleanall RECCLEAN=$RecClean
+    # Clean a real canonical checkout when present; otherwise clean the
+    # downloaded *_loc checkout. Never delete the canonical source tree.
+    clean_target=""
+    if test -d "$dirlib" && { test -f "$dirlib/Makefile" || test -f "$dirlib/makefile"; }
+    then
+      clean_target="$dirlib"
+    elif test -d "${dirlib}_loc"
+    then
+      clean_target="${dirlib}_loc"
+    fi
+    if test -n "$clean_target"
+    then
+      make -C "$clean_target" cleanall RECCLEAN="$RecClean"
+    fi
   done
 elif [ "$CleanType" = "cleanlocextlib" ]
 then
-  cd $CleanDIR
+  cd "$CleanDIR" || exit 1
   for dirlib in $CleanList
   do
     echo $dirlib
 
-    #remove the link
-    rm -fr $dirlib
+    # Remove only a compatibility symlink. A canonical source checkout is
+    # part of the application and must not be deleted.
+    if test -L "$dirlib"
+    then
+      rm -f "$dirlib"
+    elif test -e "$dirlib"
+    then
+      echo "Keep existing source directory $dirlib"
+    fi
 
     #remove the directory
-    rm -rf $dirlib"_loc"
-    echo "Remove the "$dirlib"_loc directory."
+    rm -rf "${dirlib}_loc"
+    echo "Remove the ${dirlib}_loc directory."
   done
 else
   echo "The present script, cleanExtLib, has three arguments:"
